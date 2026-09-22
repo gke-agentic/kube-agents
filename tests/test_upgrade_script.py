@@ -809,7 +809,9 @@ class UpgradeReusesTheInstallCheckoutTest(unittest.TestCase):
             ["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True
         ).stdout.strip()
 
-    def _existing_clone_fixture(self, checked_out_tag, full_clone=False, with_install_env=True):
+    def _existing_clone_fixture(
+        self, checked_out_tag, full_clone=False, with_install_env=True, real_installer_common=False
+    ):
         """A clone of an earlier release under HOME, the way an install leaves one.
 
         A bare "upstream" holds tags 0.2.0 and 0.3.0, each tracking install.sh
@@ -820,6 +822,13 @@ class UpgradeReusesTheInstallCheckoutTest(unittest.TestCase):
         taken while only 0.2.0 exists, so it has never seen 0.3.0 — the shape of
         a checkout from an earlier install. Returns (home_dir, clone_dir,
         upstream_url, {tag: commit}).
+
+        A one-line marker is enough for the arms that only look for the file.
+        `real_installer_common` puts this repository's helpers in it instead,
+        for the runs that go on to source it: main() takes load_install_env and
+        the DEFAULT_* coordinates from there, and a stub would stop the run
+        before it reached what the test is about. The marker line is kept at the
+        top either way, so the release a checkout is on stays readable.
         """
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(temp_dir.cleanup)
@@ -831,17 +840,35 @@ class UpgradeReusesTheInstallCheckoutTest(unittest.TestCase):
         home_dir.mkdir()
         git = self._git
 
+        helpers = (_REPO_ROOT / "scripts" / "installer" / "installer_common.sh").read_text()
+
+        def installer_common(release):
+            marker = f"# release {release}\n"
+            return marker + helpers if real_installer_common else marker
+
+        # installer_common.sh reads the defaults file at the root of the
+        # checkout it was loaded from, and says so and stops when it is not
+        # there, so the real helpers only work in a fixture that ships it too.
+        tracked = ["install.sh", "scripts/installer/installer_common.sh"]
+        if real_installer_common:
+            tracked.append("install.defaults.env")
+
+        def write_release(release):
+            (work_dir / "install.sh").write_text(f"release {release}\n")
+            (work_dir / "scripts" / "installer" / "installer_common.sh").write_text(installer_common(release))
+            if real_installer_common:
+                shutil.copy(_REPO_ROOT / "install.defaults.env", work_dir / "install.defaults.env")
+            git("add", *tracked, cwd=work_dir)
+            git("commit", "-m", f"release {release}", cwd=work_dir)
+            git("tag", release, cwd=work_dir)
+
         work_dir.mkdir()
         git("init", "-b", "main", cwd=work_dir)
         git("config", "user.name", "Test", cwd=work_dir)
         git("config", "user.email", "test@example.com", cwd=work_dir)
         git("config", "commit.gpgsign", "false", cwd=work_dir)
         (work_dir / "scripts" / "installer").mkdir(parents=True)
-        (work_dir / "scripts" / "installer" / "installer_common.sh").write_text("# release 0.2.0\n")
-        (work_dir / "install.sh").write_text("release 0.2.0\n")
-        git("add", "install.sh", "scripts/installer/installer_common.sh", cwd=work_dir)
-        git("commit", "-m", "release 0.2.0", cwd=work_dir)
-        git("tag", "0.2.0", cwd=work_dir)
+        write_release("0.2.0")
         git("clone", "--bare", "--quiet", str(work_dir), str(bare_dir), cwd=base)
         upstream_url = bare_dir.as_uri()
         if full_clone:
@@ -849,11 +876,7 @@ class UpgradeReusesTheInstallCheckoutTest(unittest.TestCase):
         else:
             git("clone", "--quiet", "--filter=blob:none", "--no-checkout", upstream_url, str(clone_dir), cwd=base)
 
-        (work_dir / "install.sh").write_text("release 0.3.0\n")
-        (work_dir / "scripts" / "installer" / "installer_common.sh").write_text("# release 0.3.0\n")
-        git("add", "install.sh", "scripts/installer/installer_common.sh", cwd=work_dir)
-        git("commit", "-m", "release 0.3.0", cwd=work_dir)
-        git("tag", "0.3.0", cwd=work_dir)
+        write_release("0.3.0")
         git("push", "--quiet", upstream_url, "main", "--tags", cwd=work_dir)
         commits = {tag: git("rev-parse", f"{tag}^{{commit}}", cwd=work_dir) for tag in ("0.2.0", "0.3.0")}
 
@@ -1499,6 +1522,136 @@ exit {exit_code}
         self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
         self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), "")
         self.assertNotEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+
+    def _whole_run_through_a_real_pipe(self, home_dir, upstream_url, args, cwd=None, gcloud_exit=0):
+        """Run main() end to end, with the script arriving on stdin.
+
+        Everything above this point stops at a function boundary: the
+        acquisition tests call acquire_upgrade_sources and read what it set, and
+        ConfigurationLookupOrderTest calls resolve_install_env_file with
+        directories it chose itself. The line that hands one to the other is
+        main()'s alone, and only a whole run executes it.
+
+        The remote is the fixture's bare repository, substituted into the piped
+        text because upgrade.sh assigns KUBE_AGENTS_REPO_URL unconditionally and
+        a run that reached github.com would not be hermetic. The CLI tools are
+        stubs: this is about what the run reads before it touches a cluster.
+        """
+        base = home_dir.parent
+        stub_bin = base / "stub-bin"
+        stub_bin.mkdir(exist_ok=True)
+        # operator mode's required_tools, and no more: it needs neither jq nor
+        # terraform, so a host missing either still runs this.
+        for tool, exit_code in (("gcloud", gcloud_exit), ("kubectl", 0), ("helm", 0)):
+            stub = stub_bin / tool
+            stub.write_text(f"#!/usr/bin/env bash\nexit {exit_code}\n")
+            stub.chmod(0o755)
+        neutral = base / "neutral"
+        neutral.mkdir(exist_ok=True)
+        script = _UPGRADE_SH.read_text()
+        default_remote = 'KUBE_AGENTS_REPO_URL="https://github.com/gke-labs/kube-agents.git"'
+        self.assertIn(default_remote, script, "the remote is no longer a plain assignment to substitute")
+        env = get_isolated_test_env(overrides={"HOME": str(home_dir)}, bin_dir=str(stub_bin))
+        # The run has to resolve the file for itself; a pointer in the
+        # developer's environment would answer before the hand-off did.
+        env.pop("KUBE_AGENTS_INSTALL_ENV", None)
+        return subprocess.run(
+            ["bash", "-s", "--", *args],
+            input=script.replace(default_remote, f'KUBE_AGENTS_REPO_URL="{upstream_url}"', 1),
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(cwd or neutral),
+        )
+
+    def test_a_piped_preview_reads_the_configuration_out_of_the_install_checkout(self):
+        """The whole of #1754 in one run: sources from HOME, configuration too.
+
+        A preview builds its own sources, so repo_dir is a temporary clone with
+        no install.env in it — which is exactly the shape that used to make the
+        upgrade one-liner refuse. The install checkout is the second place the
+        resolution looks, and the project below is proof the file was not merely
+        found but read.
+        """
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture(
+            "0.2.0", real_installer_common=True
+        )
+
+        proc = self._whole_run_through_a_real_pipe(
+            home_dir,
+            upstream_url,
+            ["--image-tag=0.3.0", "--upgrade-mode=operator", "--dry-run", "--non-interactive"],
+        )
+
+        combined = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 0, combined)
+        self.assertIn(f"Loaded install configuration from: {clone_dir}/install.env", combined)
+        self.assertIn("GCP Target Project", combined)
+        self.assertIn("my-gcp-project", combined)
+        # A preview changes nothing, including where the install's checkout sits.
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+
+    def test_a_piped_preview_without_any_install_env_says_where_it_looked(self):
+        """The negative control: the same run, with nothing to find.
+
+        Without it the assertion above could pass on a resolution that names the
+        file for reasons of its own, rather than because the hand-off carried
+        the install checkout into it. A checkout with no install.env is not
+        adopted at all, so the only directory left to search is this run's own
+        temporary clone — and the warning names it.
+
+        It then stops for want of a project, which is the same fact seen from
+        the other end: PROJECT_ID reaches the run through install.env, so the
+        preview above could not have printed one it had not read.
+        """
+        home_dir, clone_dir, upstream_url, _ = self._existing_clone_fixture(
+            "0.2.0", with_install_env=False, real_installer_common=True
+        )
+
+        proc = self._whole_run_through_a_real_pipe(
+            home_dir,
+            upstream_url,
+            ["--image-tag=0.3.0", "--upgrade-mode=operator", "--dry-run", "--non-interactive"],
+        )
+
+        combined = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 1, combined)
+        self.assertIn("No install configuration (install.env) was found in", combined)
+        self.assertNotIn("Loaded install configuration from", combined)
+        self.assertNotIn(str(clone_dir), combined.split("was found in", 1)[1])
+        self.assertIn("A GCP project is required", combined)
+
+    def test_a_piped_upgrade_gets_past_the_refusal_that_sent_1754_here(self):
+        """The reported failure, run: `curl … | bash` after a documented install.
+
+        The preview above cannot answer this one, because --dry-run exits above
+        the fail-closed refusal. So this is a real run, stopped at the first
+        thing that needs a cluster: the credentials fetch. What it owes is the
+        ground it covered before that — configuration loaded, no refusal — and
+        the checkout it detached handed back, since nothing was applied.
+
+        It is not the test that pins the hand-off's second argument: a real run
+        adopts the install checkout as its sources, so repo_dir and
+        install_checkout are the same directory and either would find the file.
+        The preview is where they differ, and where dropping the argument
+        brings the refusal back.
+        """
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture(
+            "0.2.0", real_installer_common=True
+        )
+
+        proc = self._whole_run_through_a_real_pipe(
+            home_dir,
+            upstream_url,
+            ["--image-tag=0.3.0", "--upgrade-mode=operator", "--non-interactive"],
+            gcloud_exit=1,
+        )
+
+        combined = proc.stdout + proc.stderr
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn(f"Loaded install configuration from: {clone_dir}/install.env", combined)
+        self.assertNotIn("Refusing to upgrade without", combined)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
 
 
 class ConfigurationLookupOrderTest(unittest.TestCase):

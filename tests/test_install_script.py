@@ -906,23 +906,43 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
         # lookup coming back: a checkout carrying the retired file, with the
         # bootstrap pointed at the install.env beside it and the run standing in
         # it, so a reintroduced read relative to either the target or the
-        # working directory would put CLUSTER_NAME in the environment. The
-        # explicit pointer is cleared for the same reason: with
-        # KUBE_AGENTS_INSTALL_ENV set, every shape of this lookup the installer
-        # has ever had returned early.
+        # working directory would put CLUSTER_NAME in the environment.
+        #
+        # install.sh is copied into that checkout and sourced from the copy,
+        # rather than sourced from this repository. The source-time bootstrap
+        # resolves install.env against `dirname "${BASH_SOURCE[0]}"` first and
+        # $HOME/kube-agents last, so sourcing the tracked path with no explicit
+        # pointer reads whichever install.env the developer keeps here — the run
+        # would answer differently on different machines, and a real CLUSTER_NAME
+        # would satisfy the assertion below for entirely the wrong reason. HOME
+        # moves with it, for the last arm of the same resolution. The pointer
+        # stays unset on purpose: with KUBE_AGENTS_INSTALL_ENV set, every shape
+        # of this lookup the installer has ever had returned early.
         with tempfile.TemporaryDirectory() as tmpdir:
-            checkout = pathlib.Path(tmpdir)
+            checkout = pathlib.Path(tmpdir) / "checkout"
+            home = pathlib.Path(tmpdir) / "home"
+            checkout.mkdir()
+            home.mkdir()
             retired = checkout / "k8s-operator" / "scripts" / "vars.sh"
             retired.parent.mkdir(parents=True)
             retired.write_text('export CLUSTER_NAME="from-retired-vars"\n')
+            script_copy = checkout / "install.sh"
+            shutil.copy(_INSTALL_SH, script_copy)
             missing_env = checkout / "install.env"
-            proc = self._run_install_func(
-                f'INSTALL_ENV_EXPLICIT="false"; bootstrap_install_env "{missing_env}"; echo "CLUSTER=${{CLUSTER_NAME:-<unset>}}"',
-                env={"KUBE_AGENTS_INSTALL_ENV": ""},
+            env = get_isolated_test_env(overrides={"HOME": str(home)})
+            env.pop("KUBE_AGENTS_INSTALL_ENV", None)
+            proc = _run_installer_bash(
+                f'KUBE_AGENTS_SOURCE_ONLY=true source "{script_copy}"\n'
+                f'INSTALL_ENV_EXPLICIT="false"; bootstrap_install_env "{missing_env}"\n'
+                'echo "CLUSTER=${CLUSTER_NAME:-<unset>}"\n',
+                env,
                 cwd=checkout,
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("CLUSTER=<unset>", proc.stdout)
+            # The isolation itself, not just its consequence: the bootstrap
+            # announces every file it reads, and this run has none to read.
+            self.assertNotIn("Loaded install configuration from", proc.stderr)
 
     def test_parse_args_enable_google_chat(self):
         """Verifies parse_args captures --enable-google-chat."""
