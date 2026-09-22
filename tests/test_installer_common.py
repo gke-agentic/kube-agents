@@ -10,6 +10,7 @@ import datetime
 import json
 import pathlib
 import re
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -2081,6 +2082,70 @@ class HelmReleaseSelfHealingTest(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.strip(), "")
+
+
+class MissingEndpointHelperTest(unittest.TestCase):
+    """The fallback for a tree with no gke_dns_endpoint.sh beside this file.
+
+    Nothing else reaches it. Every other test here sources the checkout's own
+    installer_common.sh, where the helper is always its neighbour, so they all
+    take the branch that sources it for real. The arm below is the one an
+    incomplete checkout takes, and the two ways it can break are both silent
+    until then: a slip in its syntax stops the source at load time, and a stub
+    that does not define the function leaves every caller with an undefined
+    command.
+    """
+
+    def _source_without_helper(self, probe):
+        """Source a copy of installer_common.sh with no helper beside it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            installer_dir = root / "scripts" / "installer"
+            installer_dir.mkdir(parents=True)
+            copied = installer_dir / "installer_common.sh"
+            shutil.copy(_INSTALLER_COMMON, copied)
+            # Two levels up, where the file looks for them. The defaults are
+            # copied because their absence is a hard failure by design -- this
+            # test is about the helper's absence alone.
+            shutil.copy(_REPO_ROOT / "install.defaults.env", root / "install.defaults.env")
+            # gke_dns_endpoint.sh is deliberately NOT created beside the copy.
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            body = f'set -u\n{_PRINT_STUBS}\nsource "{copied}"\n{probe}'
+            return subprocess.run(
+                ["bash", "-c", body],
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(bin_dir=str(bin_dir)),
+                cwd=str(root),
+            )
+
+    def test_a_tree_without_the_helper_still_defines_the_predicate(self):
+        # uninstall.sh calls this unconditionally. Were the stub missing or the
+        # arm broken, the call would be an undefined command and `set -e` would
+        # end a teardown over which endpoint to dial.
+        proc = self._source_without_helper('echo "kind=$(type -t gke_dns_endpoint_flag)"')
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("kind=function", proc.stdout, proc.stderr)
+
+    def test_the_stub_leaves_the_flag_empty_so_the_fetch_is_unchanged(self):
+        # The empty flag is the command that ran before the helper existed, and
+        # it still reaches every cluster with a routable IP endpoint. A stub
+        # that left a stale value in place would splice it into get-credentials.
+        proc = self._source_without_helper(
+            'GKE_DNS_ENDPOINT_FLAG=--stale\n'
+            'gke_dns_endpoint_flag some-cluster us-central1 some-project\n'
+            'echo "flag=[${GKE_DNS_ENDPOINT_FLAG}]"'
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("flag=[]", proc.stdout, proc.stderr)
+
+    def test_it_says_so_rather_than_falling_back_in_silence(self):
+        # uninstall.sh is the front door that reaches this; the next thing its
+        # operator sees is an unrelated-looking "API_SERVER_KEY is not set".
+        proc = self._source_without_helper("true")
+        self.assertIn("gke_dns_endpoint.sh", proc.stderr)
+        self.assertIn("IP endpoint", proc.stderr)
 
 
 if __name__ == "__main__":

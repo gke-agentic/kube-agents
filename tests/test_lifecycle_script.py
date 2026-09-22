@@ -12,6 +12,7 @@ Tests safety guards in lifecycle.sh before terraform apply:
 
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -672,6 +673,64 @@ exit 0
                 self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
                 self.assertNotIn("--dns-endpoint", args)
                 self.assertIn("get-credentials test-cluster", args)
+
+
+class MissingEndpointHelperTest(unittest.TestCase):
+    """The fallback for a checkout with no scripts/installer/gke_dns_endpoint.sh.
+
+    Nothing else reaches it. Every other test sources the checkout's own
+    lifecycle.sh, and the script cd's to its own directory before resolving the
+    helper three levels up, so the file is always there and the arm below never
+    runs. It matters because it runs under `set -euo pipefail` at load time: a
+    slip in its syntax, or a rename of `warn`, fails the whole teardown on
+    exactly the incomplete checkout the arm exists to keep working.
+    """
+
+    def _source_without_helper(self, probe):
+        """Source a copy of lifecycle.sh from a tree that has no helper."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            composition = root / "terraform" / "examples" / "full-install"
+            composition.mkdir(parents=True)
+            copied = composition / "lifecycle.sh"
+            shutil.copy(_LIFECYCLE_SH, copied)
+            # Three levels up, where the script looks. Copied because their
+            # absence is a hard failure by design; this is about the helper.
+            shutil.copy(_REPO_ROOT / "install.defaults.env", root / "install.defaults.env")
+            # scripts/installer/gke_dns_endpoint.sh is deliberately not created.
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            script = f'KUBE_AGENTS_SOURCE_ONLY=true source "{copied}"\n{probe}'
+            return subprocess.run(
+                ["bash", "-c", script],
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(bin_dir=str(bin_dir)),
+                cwd=str(composition),
+            )
+
+    def test_a_checkout_without_the_helper_still_loads(self):
+        # The arm runs at load time under `set -euo pipefail`. Broken, it takes
+        # the teardown with it -- and only on the tree it was written for.
+        proc = self._source_without_helper('echo "kind=$(type -t gke_dns_endpoint_flag)"')
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("kind=function", proc.stdout, proc.stderr)
+
+    def test_the_stub_leaves_the_flag_empty_so_teardown_dials_the_ip_endpoint(self):
+        # delete_agent_cr splices the flag unquoted, so the stub's one job is to
+        # leave nothing behind to splice.
+        proc = self._source_without_helper(
+            'GKE_DNS_ENDPOINT_FLAG=--stale\n'
+            'gke_dns_endpoint_flag some-cluster us-central1 some-project\n'
+            'echo "flag=[${GKE_DNS_ENDPOINT_FLAG}]"'
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("flag=[]", proc.stdout, proc.stderr)
+
+    def test_it_warns_rather_than_falling_back_in_silence(self):
+        proc = self._source_without_helper("true")
+        self.assertIn("gke_dns_endpoint.sh", proc.stderr)
+        self.assertIn("IP endpoint", proc.stderr)
 
 
 if __name__ == "__main__":
