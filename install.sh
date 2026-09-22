@@ -237,15 +237,6 @@ bootstrap_install_env() {
   # is the only way in.
   unset NAMESPACE
   [ -n "$file" ] || return 0
-  if [ "$INSTALL_ENV_EXPLICIT" != "true" ]; then
-    local retired_vars_file
-    retired_vars_file="$(dirname "$file")/k8s-operator/scripts/vars.sh"
-    if [ -f "$retired_vars_file" ]; then
-      print_error "Retired state file '${retired_vars_file}' found." >&2
-      print_info "k8s-operator/scripts/vars.sh is no longer read; copy any settings you still need into '${file}' and remove '${retired_vars_file}' before running install.sh." >&2
-      exit 1
-    fi
-  fi
   if [ ! -f "$file" ]; then
     if [ "$INSTALL_ENV_EXPLICIT" = "true" ]; then
       # Asked for by name and not there. That is a mistake, not a first
@@ -3169,7 +3160,6 @@ run_menu_system() {
   fi
   # shellcheck disable=SC1090
   source "$helper_script"
-  refuse_retired_vars_file "$INSTALL_ENV_FILE" "$repo_dir" "$(dirname "$INSTALL_ENV_FILE")"
 
   # install.env is already loaded at startup; re-apply it here so the panel
   # always opens on the operator's own input, whatever the sourced helpers
@@ -3520,7 +3510,6 @@ main() {
   local repo_dir=""
   acquire_source_repo repo_dir "$image_tag"
   source_provisioning_helpers "$repo_dir"
-  refuse_retired_vars_file "$INSTALL_ENV_FILE" "$repo_dir" "$(dirname "$INSTALL_ENV_FILE")"
   resolve_shared_defaults
 
   # 3. Google Cloud Authentication Check

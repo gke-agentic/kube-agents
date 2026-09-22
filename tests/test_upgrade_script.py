@@ -457,7 +457,7 @@ class UpgradeReusesTheInstallCheckoutTest(unittest.TestCase):
             ["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True
         ).stdout.strip()
 
-    def _existing_clone_fixture(self, checked_out_tag, full_clone=False):
+    def _existing_clone_fixture(self, checked_out_tag, full_clone=False, with_install_env=True):
         """A clone of an earlier release under HOME, the way an install leaves one.
 
         A bare "upstream" holds tags 0.2.0 and 0.3.0, each tracking install.sh
@@ -514,6 +514,8 @@ class UpgradeReusesTheInstallCheckoutTest(unittest.TestCase):
             git("fetch", "--quiet", "--depth=1", upstream_url, refspec, cwd=clone_dir)
             git("checkout", "--quiet", "--detach", "FETCH_HEAD", cwd=clone_dir)
             self.assertEqual(git("rev-parse", "--is-shallow-repository", cwd=clone_dir), "true")
+        if with_install_env:
+            (clone_dir / "install.env").write_text('PROJECT_ID="my-gcp-project"\n')
         return home_dir, clone_dir, upstream_url, commits
 
     def _refresh_from_outside(self, home_dir, clone_dir, upstream_url, requested_ref):
@@ -757,8 +759,8 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
         self.assertIn("already at '0.2.0'", proc.stdout)
 
-    def test_a_piped_run_from_inside_the_install_checkout_moves_it(self):
-        """Standing in ~/kube-agents when piping upgrade.sh must move the checkout, not fail the ref check."""
+    def test_a_run_from_outside_standing_in_the_install_checkout_moves_it(self):
+        """Standing in ~/kube-agents when running an outside copy of upgrade.sh moves the checkout rather than failing the ref check."""
         home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
 
         proc = self._acquire_from_outside(home_dir, upstream_url, "0.3.0", cwd=clone_dir)
@@ -768,8 +770,8 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), str(clone_dir))
         self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
 
-    def test_a_piped_plan_from_inside_the_install_checkout_does_not_move_it(self):
-        """A piped --plan run from inside ~/kube-agents keeps it at its current ref and still finds install.env."""
+    def test_a_plan_from_outside_standing_in_the_install_checkout_does_not_move_it(self):
+        """An outside --plan copy run while standing in ~/kube-agents keeps it at its current ref and still finds install.env."""
         home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
 
         proc = self._acquire_from_outside(
@@ -979,6 +981,19 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertEqual(self._reported(home_proc, "INSTALL_CHECKOUT"), str(clone_dir))
         self.assertEqual(self._reported(home_proc, "REPO_DIR"), str(clone_dir))
 
+    def test_a_home_checkout_without_install_env_is_not_moved(self):
+        """A clone in ~/kube-agents carrying no install.env is not detached onto the release before main() refuses."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0", with_install_env=False)
+        neutral = home_dir.parent / "neutral"
+        neutral.mkdir(exist_ok=True)
+
+        proc = self._acquire_through_a_real_pipe(home_dir, upstream_url, "0.3.0", cwd=neutral)
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+        self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), "")
+        self.assertNotEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+
 
 class ConfigurationLookupOrderTest(unittest.TestCase):
     """Which install.env an upgrade loads, when more than one is reachable.
@@ -1076,34 +1091,13 @@ resolve_install_env_file "{repo_dir}" "{install_checkout}"
 
         self.assertEqual(resolved, str(base / "sources" / "install.env"))
 
-    def test_retired_vars_sh_is_refused_even_when_install_env_exists(self):
-        """A checkout still holding k8s-operator/scripts/vars.sh is refused whether or not install.env exists beside it."""
-        base = self._layout()
-        checkout = base / "checkout"
-        retired = checkout / "k8s-operator" / "scripts" / "vars.sh"
-        retired.parent.mkdir(parents=True)
-        retired.write_text('export MEMORY="hindsight"\n')
-        install_env = checkout / "install.env"
-        for present in (False, True):
-            if present:
-                install_env.write_text('CLUSTER_NAME="partial-install-env"\n')
-            with self.subTest(install_env_present=present):
-                script = f"""
-KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
-source "{self._INSTALLER_COMMON}"
-refuse_retired_vars_file "{install_env}" "{checkout}"
-"""
-                proc = subprocess.run(
-                    ["bash", "-c", script],
-                    capture_output=True,
-                    text=True,
-                    env={"HOME": str(base / "cwd"), "PATH": os.environ["PATH"]},
-                    cwd=str(base / "cwd"),
-                )
-                self.assertNotEqual(proc.returncode, 0)
-                self.assertIn("Retired state file", proc.stdout + proc.stderr)
-                self.assertIn(str(install_env), proc.stdout + proc.stderr)
-                self.assertIn("remove", proc.stdout + proc.stderr)
+    def test_upgrade_never_references_retired_vars_sh(self):
+        """k8s-operator/scripts/vars.sh is retired and never read, written, or inspected by upgrade.sh or installer_common.sh."""
+        for path in (_UPGRADE_SH, self._INSTALLER_COMMON):
+            with self.subTest(file=path.name):
+                text = path.read_text()
+                self.assertNotIn("k8s-operator/scripts/vars.sh", text)
+                self.assertNotIn("load_legacy_vars_file", text)
 
 
 class FrontDoorsAgreeOnTheInstallCheckoutTest(unittest.TestCase):

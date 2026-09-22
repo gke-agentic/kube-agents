@@ -151,8 +151,9 @@ These refusals happen before anything on the cluster moves.
   newer one is refused rather than silently applying the older tree. Start again from a clean
   checkout or from the bundle of the release you want.
 - **No install configuration.** Neither `KUBE_AGENTS_INSTALL_ENV` nor an `install.env` was found in
-  any of the configuration locations described at the top of this page (or the checkout holds only a
-  retired `k8s-operator/scripts/vars.sh` that has not yet been copied into `install.env`).
+  any of the configuration locations described at the top of this page. An install predating 0.4.0,
+  which kept its settings in the retired `k8s-operator/scripts/vars.sh` and never gained an
+  `install.env`, is refused here: copy those settings into an `install.env` first.
 - **No Helm release.** The target namespace has no `kube-agents` release to upgrade.
 
 ## Where to go next

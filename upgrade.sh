@@ -578,10 +578,10 @@ refresh_existing_clone() {
 # worktree as soon as the script's own baked release version equals the
 # requested ref — the default on every release copy — so a stale unpacked
 # bundle or an unrelated tree left at this path would be announced as verified
-# release sources and then applied to a live install. The checks are
-# refresh_existing_clone's own first three, in the same order and for the same
-# reasons; a directory that fails them is left alone and the run fetches its
-# engine instead.
+# release sources and then applied to a live install. The first three checks
+# match refresh_existing_clone's, and the fourth requires kube-agents' own
+# installer helper in HEAD alongside install.sh; a directory that fails them is
+# left alone and the run fetches its engine instead.
 is_kube_agents_clone() {
   local repo_dir="$1"
   [ -n "$repo_dir" ] && [ -d "$repo_dir" ] || return 1
@@ -701,6 +701,7 @@ run_lifecycle() {
 
 checkout_owns_run_config() {
   local candidate="$1"
+  [ -f "${candidate}/install.env" ] || return 1
   if [ -n "${KUBE_AGENTS_INSTALL_ENV:-}" ]; then
     [ "$KUBE_AGENTS_INSTALL_ENV" = "${candidate}/install.env" ]
     return
@@ -781,7 +782,7 @@ acquire_upgrade_sources() {
     if [ -n "${HOME:-}" ]; then
       clone_dir="$(kube_agents_clone_dir)"
     fi
-    if [ -f "$(pwd)/scripts/installer/installer_common.sh" ] && [ -f "$(pwd)/install.env" ] && checkout_owns_run_config "$(pwd)"; then
+    if [ -f "$(pwd)/scripts/installer/installer_common.sh" ] && checkout_owns_run_config "$(pwd)"; then
       found_checkout="$(pwd)"
     elif [ -n "$clone_dir" ] && is_kube_agents_clone "$clone_dir" && checkout_owns_run_config "$clone_dir"; then
       found_checkout="$clone_dir"
@@ -922,7 +923,6 @@ main() {
   # preview reads its engine from a temporary copy, which has no install.env.
   local install_env_file
   install_env_file="$(resolve_install_env_file "$repo_dir" "$install_checkout")"
-  refuse_retired_vars_file "$install_env_file" "$repo_dir" "$install_checkout" "$(pwd)"
   local state_loaded="false"
   if load_install_env "$install_env_file"; then
     state_loaded="true"
@@ -976,7 +976,6 @@ main() {
   if [ "$state_loaded" != "true" ]; then
     print_error "Refusing to upgrade without the installation's configuration."
     print_info "Run upgrade.sh from the directory holding the install's install.env, point KUBE_AGENTS_INSTALL_ENV at one, or keep the install checkout the installer left in \$HOME/kube-agents."
-    print_info "If this install predates 0.4.0 and holds only k8s-operator/scripts/vars.sh, copy its settings into install.env first."
     exit 1
   fi
 
