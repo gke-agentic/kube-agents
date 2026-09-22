@@ -63,12 +63,13 @@ cp /path/to/your/install/install.env .
 
 ## Upgrade modes
 
-- `--upgrade-mode=harness` re-tags the Platform Agent image and the sandbox image it reaches over
-  ssh — both are built from the same revision — through `helm upgrade --reset-then-reuse-values`.
+- `--upgrade-mode=harness` re-tags the Platform Agent image, the sandbox image it reaches over
+  ssh, and every plugin image the release records — all are built from the same revision —
+  through `helm upgrade --reset-then-reuse-values`.
 - `--upgrade-mode=operator` applies the chart's CRDs with `kubectl` first — Helm never touches
   `crds/` on an upgrade — then re-tags the operator image the same way.
 - `--upgrade-mode=full`, the default, applies the CRDs and then runs a full `terraform apply`
-  through the install engine: both image tags move, and every setting in `install.env` is
+  through the install engine: every image tag moves, and every setting in `install.env` is
   re-rendered.
 
 The operator moves before the harness because the operator owns the resources the harness runs as.

@@ -76,8 +76,51 @@ PARAM_REGION=""
 PARAM_AGENT_NAMESPACE=""
 PARAM_IMAGE_TAG="${IMAGE_TAG:-${BAKED_RELEASE_VERSION:-}}"
 TEMP_REPO_DIR=""
+# Set when this run detached the install's own checkout onto the target
+# release. Everything that can still refuse the upgrade — the configuration
+# load, the missing-project exit, the credentials fetch, the Helm release
+# guard, the KMS and service-account guards, Terraform itself — runs after that
+# move, so a run that fails one of them would otherwise leave the operator's
+# directory on a revision the cluster is not on, and the next install.sh,
+# uninstall.sh or hand-run terraform in it would drive an N+1 engine against an
+# N install. The move is undone on a failed exit, and only while nothing has
+# been applied yet: once the first object is on the cluster the checkout and
+# the install are converging, and putting it back would be the lie instead.
+MOVED_CHECKOUT_DIR=""
+MOVED_CHECKOUT_PREV_HEAD=""
+MOVED_CHECKOUT_PREV_BRANCH=""
+UPGRADE_APPLY_STARTED="false"
+# Set when the sources came from a checkout that was already on disk rather
+# than from a fetch this run made. See verify_local_source_ref: a tag in a
+# directory this run did not fetch is only as trustworthy as wherever it came
+# from, and before this arm existed the tagged path always fetched from
+# KUBE_AGENTS_REPO_URL.
+SOURCES_ADOPTED_CHECKOUT="false"
+
+restore_moved_checkout() {
+  [ -n "$MOVED_CHECKOUT_DIR" ] || return 0
+  [ -d "$MOVED_CHECKOUT_DIR" ] || return 0
+  local target="$MOVED_CHECKOUT_PREV_HEAD" what="$MOVED_CHECKOUT_PREV_HEAD"
+  if [ -n "$MOVED_CHECKOUT_PREV_BRANCH" ]; then
+    target="$MOVED_CHECKOUT_PREV_BRANCH"
+    what="branch '${MOVED_CHECKOUT_PREV_BRANCH}'"
+  fi
+  # Best effort by necessity: this runs from the EXIT trap of a run that has
+  # already failed, and a checkout the operator has since edited is theirs to
+  # resolve. Say so either way rather than restoring silently.
+  if git -C "$MOVED_CHECKOUT_DIR" checkout --quiet "$target" 2>/dev/null; then
+    print_info "Nothing was applied, so ${MOVED_CHECKOUT_DIR} was returned to ${what}."
+  else
+    print_warning "Could not return ${MOVED_CHECKOUT_DIR} to ${what}; it is still on the revision this run checked out. 'git -C ${MOVED_CHECKOUT_DIR} checkout ${target}' undoes it."
+  fi
+  MOVED_CHECKOUT_DIR=""
+}
 
 cleanup() {
+  local exit_code="$?"
+  if [ "$exit_code" -ne 0 ] && [ "$UPGRADE_APPLY_STARTED" != "true" ]; then
+    restore_moved_checkout
+  fi
   if [ -n "$TEMP_REPO_DIR" ] && [ -d "$TEMP_REPO_DIR" ]; then
     rm -rf -- "$TEMP_REPO_DIR"
   fi
@@ -488,6 +531,30 @@ verify_local_source_clean() {
   print_success "Verified the upgrade sources are a clean checkout of $(git -C "$repo_dir" rev-parse --short HEAD)."
 }
 
+# What the canonical repository says a release tag names, printed as a commit
+# SHA. Fails when the remote cannot be reached or does not carry the tag.
+#
+# Asked for the peeled form first: an annotated tag's own object is not the
+# commit, and comparing a checkout's HEAD against it would never match.
+# kube-agents' release tags are lightweight today, which is the second query.
+remote_release_tag_commit() {
+  local expected_ref="$1" listing="" commit=""
+  listing="$(git ls-remote --tags "$KUBE_AGENTS_REPO_URL" "$expected_ref" 2>/dev/null)" || return 1
+  commit="$(printf '%s\n' "$listing" | awk -v ref="refs/tags/${expected_ref}^{}" -F'\t' '$2 == ref {print $1; exit}')"
+  if [ -z "$commit" ]; then
+    commit="$(printf '%s\n' "$listing" | awk -v ref="refs/tags/${expected_ref}" -F'\t' '$2 == ref {print $1; exit}')"
+  fi
+  [ -n "$commit" ] || return 1
+  printf '%s' "$commit"
+}
+
+# Whether the ref names a commit outright rather than a tag. A 40-character
+# object name is self-verifying — a checkout cannot hold a different tree under
+# the same SHA — so it needs no second opinion from the remote.
+ref_is_commit_sha() {
+  printf '%s' "${1:-}" | grep -Eq '^[0-9a-f]{40}$'
+}
+
 verify_local_source_ref() {
   local repo_dir="$1"
   local expected_ref="$2"
@@ -533,6 +600,42 @@ verify_local_source_ref() {
   if [ "$current_commit" != "$expected_commit" ]; then
     print_error "Source/image version mismatch: checkout is ${current_commit}, requested ref resolves to ${expected_commit}."
     return 1
+  fi
+  # Whose '0.6.0' is this? For sources this run fetched, the answer is settled:
+  # they came from KUBE_AGENTS_REPO_URL under refs/tags. For a checkout that
+  # was already on disk it is not, because the tag was resolved out of that
+  # checkout's own object database — a tag fetched from a fork, or made by hand
+  # with `git tag 0.6.0`, resolves just as well and would be applied to the live
+  # install under the release's image tag. Before this script reused the
+  # install's checkout, the tagged path always fetched, so this asks the
+  # canonical repository the question that fetch used to answer implicitly.
+  #
+  # Skipped for a commit SHA, which is self-verifying, and only warned about in
+  # a preview, which changes nothing and is also the mode an operator reaches
+  # for when the network is the thing that is broken. A real upgrade refuses,
+  # including when the remote cannot be reached: the fetch it replaces needed
+  # the network too.
+  if [ "$SOURCES_ADOPTED_CHECKOUT" = "true" ] && ! ref_is_commit_sha "$expected_ref"; then
+    local preview_only="false" remote_commit=""
+    if [ "$PARAM_DRY_RUN" = "true" ] || [ "$PARAM_PLAN" = "true" ]; then
+      preview_only="true"
+    fi
+    if ! remote_commit="$(remote_release_tag_commit "$expected_ref")"; then
+      if [ "$preview_only" = "true" ]; then
+        print_warning "Could not ask ${KUBE_AGENTS_REPO_URL} what '${expected_ref}' names, so this preview is trusting the tag in ${repo_dir}."
+      else
+        print_error "Could not ask ${KUBE_AGENTS_REPO_URL} what '${expected_ref}' names, and ${repo_dir} was not fetched by this run, so its '${expected_ref}' cannot be confirmed as the release."
+        return 1
+      fi
+    elif [ "$remote_commit" != "$expected_commit" ]; then
+      if [ "$preview_only" = "true" ]; then
+        print_warning "The '${expected_ref}' in ${repo_dir} is ${expected_commit}, but ${KUBE_AGENTS_REPO_URL} names ${remote_commit}. This preview reads the local one."
+      else
+        print_error "Refusing to upgrade from ${repo_dir}: its '${expected_ref}' is ${expected_commit}, but ${KUBE_AGENTS_REPO_URL} names ${remote_commit}."
+        print_info "That checkout's tag did not come from the release. Delete or re-point it ('git -C ${repo_dir} tag -d ${expected_ref}'), or run the upgrade from a directory this script can fetch into."
+        return 1
+      fi
+    fi
   fi
   if [ -n "$(git -C "$repo_dir" status --porcelain --untracked-files=no)" ]; then
     # Both previews warn, the way verify_local_source_clean's do and for the
@@ -772,10 +875,21 @@ checkout_owns_run_config() {
   local candidate="$1"
   [ -f "${candidate}/install.env" ] || return 1
   if [ -n "${KUBE_AGENTS_INSTALL_ENV:-}" ]; then
-    [ "$KUBE_AGENTS_INSTALL_ENV" = "${candidate}/install.env" ]
+    # The same file, however it is spelled. An operator can point this at the
+    # checkout's own install.env through a relative path, a symlink, or a
+    # doubled slash, and a string compare would answer "no" and send a run that
+    # is already reading that checkout's config off to a temporary clone. -ef
+    # compares device and inode, so it answers for the file. The string compare
+    # is only the fallback for a path that does not exist, which
+    # resolve_install_env_file refuses on its own with a better message.
+    if [ -e "$KUBE_AGENTS_INSTALL_ENV" ]; then
+      [ "$KUBE_AGENTS_INSTALL_ENV" -ef "${candidate}/install.env" ]
+    else
+      [ "$KUBE_AGENTS_INSTALL_ENV" = "${candidate}/install.env" ]
+    fi
     return
   fi
-  if [ -f "$(pwd)/install.env" ] && [ "$(pwd)" != "$candidate" ]; then
+  if [ -f "$(pwd)/install.env" ] && ! [ "$(pwd)/install.env" -ef "${candidate}/install.env" ]; then
     return 1
   fi
   return 0
@@ -870,9 +984,24 @@ acquire_upgrade_sources() {
     fi
     if [ -n "$found_checkout" ] && [ "$preview" = "false" ]; then
       resolved_dir="$found_checkout"
+      # Read before the move, so the EXIT trap can undo it if this run refuses
+      # later. refresh_existing_clone is pinned byte-equal to install.sh's, so
+      # the bookkeeping sits here rather than inside it: install.sh moves a
+      # clone it made, this moves the operator's own directory.
+      local prev_head="" prev_branch="" now_head=""
+      prev_head="$(git -C "$resolved_dir" rev-parse --verify HEAD 2>/dev/null || echo "")"
+      prev_branch="$(git -C "$resolved_dir" symbolic-ref --short -q HEAD || true)"
       refresh_existing_clone "$resolved_dir" "$expected_ref"
+      now_head="$(git -C "$resolved_dir" rev-parse --verify HEAD 2>/dev/null || echo "")"
+      if [ -n "$prev_head" ] && [ -n "$now_head" ] && [ "$prev_head" != "$now_head" ]; then
+        MOVED_CHECKOUT_DIR="$resolved_dir"
+        MOVED_CHECKOUT_PREV_HEAD="$prev_head"
+        MOVED_CHECKOUT_PREV_BRANCH="$prev_branch"
+      fi
+      SOURCES_ADOPTED_CHECKOUT="true"
     elif [ -n "$found_checkout" ] && clone_head_is_ref "$found_checkout" "$expected_ref"; then
       resolved_dir="$found_checkout"
+      SOURCES_ADOPTED_CHECKOUT="true"
       print_info "Using the install checkout at ${resolved_dir}: it is already at '${expected_ref}'."
     else
       if [ -n "$found_checkout" ]; then
@@ -1236,6 +1365,14 @@ main() {
     exit "$plan_status"
   fi
 
+  # Past here every mode puts something on the cluster: CRDs and a re-tagging
+  # `helm upgrade` for operator and harness, a full `terraform apply` for full.
+  # Both previews have already exited above, so this is the line at which the
+  # install starts moving to the release the checkout is on — and therefore the
+  # line after which the EXIT trap must stop undoing the checkout move, since a
+  # half-applied upgrade that is resumed or debugged needs the sources it was
+  # applying rather than the ones it came from.
+  UPGRADE_APPLY_STARTED="true"
   case "$PARAM_UPGRADE_MODE" in
     operator)
       print_step "4. Upgrading Kubernetes Operator (CRDs & Controller Manager)"

@@ -891,6 +891,24 @@ refresh_existing_clone "{clone_dir}" "{requested_ref}"
         clone_preference = text.index('refresh_existing_clone "$resolved_dir" "$expected_ref"')
         self.assertLess(tagless_refusal, clone_preference)
 
+    def test_a_tagless_preview_refuses_even_with_an_install_checkout_in_home(self):
+        """The behaviour the line order above is a proxy for.
+
+        A string compare would keep passing if the refusal were moved below the
+        clone preference but its text left where it is, so this runs the arm:
+        HOME holds a checkout this script would happily adopt for a tagged run,
+        and a tagless run still has to refuse rather than reach for it.
+        """
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+
+        proc = self._acquire_from_outside(home_dir, upstream_url, "", preview_flag="PARAM_PLAN")
+
+        self.assertNotEqual(proc.returncode, 0)
+        combined = proc.stdout + proc.stderr
+        self.assertIn("have to run from a kube-agents checkout", combined)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+        self.assertIsNone(self._reported(proc, "REPO_DIR"))
+
     def _acquire_from_outside(
         self, home_dir, upstream_url, requested_ref, preview_flag=None, cwd=None, baked_version=None
     ):
@@ -941,6 +959,109 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
         self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), str(clone_dir))
+        self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
+
+    def _forge_local_tag(self, clone_dir, tag):
+        """Give the clone a tag of its own that upstream does not agree with.
+
+        The shape a fork fetch or a hand-run `git tag 0.3.0` leaves: the name
+        resolves in the checkout's own object database, so every local
+        resolution answers, and answers with the wrong commit.
+        """
+        self._git("tag", tag, "HEAD", cwd=clone_dir)
+        return self._git("rev-parse", f"{tag}^{{commit}}", cwd=clone_dir)
+
+    def test_a_locally_forged_release_tag_is_refused(self):
+        """A tag the release did not create must not be applied as the release.
+
+        Resolving the ref against the adopted checkout is what makes this
+        reachable: before the upgrade reused a checkout it always fetched the
+        tag from KUBE_AGENTS_REPO_URL, so "verified 0.3.0" meant the remote's
+        0.3.0. Here the checkout carries its own.
+        """
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+        forged = self._forge_local_tag(clone_dir, "0.3.0")
+        self.assertNotEqual(forged, commits["0.3.0"])
+
+        proc = self._acquire_from_outside(home_dir, upstream_url, "0.3.0")
+
+        self.assertNotEqual(proc.returncode, 0)
+        combined = proc.stdout + proc.stderr
+        self.assertIn("Refusing to upgrade from", combined)
+        self.assertIn(commits["0.3.0"], combined)
+        self.assertNotIn("Verified upgrade scripts and image ref", combined)
+
+    def test_a_preview_over_a_forged_tag_warns_instead_of_refusing(self):
+        """Previews change nothing, so they report the disagreement and go on.
+
+        Same split as the dirty-checkout branch immediately below it in
+        verify_local_source_ref, and for the same reason.
+        """
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+        self._forge_local_tag(clone_dir, "0.3.0")
+
+        proc = self._acquire_from_outside(home_dir, upstream_url, "0.3.0", preview_flag="PARAM_PLAN")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        combined = proc.stdout + proc.stderr
+        self.assertIn(f"but {upstream_url} names {commits['0.3.0']}", combined)
+        self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+
+    def _acquire_then_exit(self, home_dir, upstream_url, requested_ref, exit_code, apply_started=False):
+        """Move the clone, then leave with a status, through the real EXIT trap.
+
+        Written as one bash run rather than by calling restore_moved_checkout
+        directly, because what is under test is the wiring: the bookkeeping
+        acquire_upgrade_sources records, the condition cleanup applies to it,
+        and the trap that gets it called at all.
+        """
+        outside_dir = home_dir.parent / "outside"
+        outside_dir.mkdir(exist_ok=True)
+        isolated_upgrade_sh = outside_dir / "upgrade.sh"
+        isolated_upgrade_sh.write_text(_UPGRADE_SH.read_text())
+        applied_line = 'UPGRADE_APPLY_STARTED="true"' if apply_started else ":"
+        setup = f"""
+KUBE_AGENTS_SOURCE_ONLY=true source "{isolated_upgrade_sh}"
+KUBE_AGENTS_REPO_URL="{upstream_url}"
+repo_dir=""
+install_checkout=""
+acquire_upgrade_sources repo_dir install_checkout "{requested_ref}"
+{applied_line}
+exit {exit_code}
+"""
+        return subprocess.run(
+            ["bash", "-c", setup],
+            capture_output=True,
+            text=True,
+            env={"HOME": str(home_dir), "PATH": os.environ["PATH"]},
+            cwd=str(outside_dir),
+        )
+
+    def test_a_run_that_fails_before_applying_returns_the_checkout(self):
+        """Nothing reached the cluster, so the operator's directory goes back.
+
+        Every refusal left in the run — no install.env, no project, credentials,
+        no Helm release, the KMS and service-account guards, Terraform itself —
+        happens after the move. Leaving the checkout on the new release after
+        one of them puts the next install.sh, uninstall.sh or hand-run terraform
+        in that directory on an engine the install is not running.
+        """
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+
+        proc = self._acquire_then_exit(home_dir, upstream_url, "0.3.0", exit_code=1)
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("was returned to", proc.stdout)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+
+    def test_a_run_that_has_started_applying_keeps_the_checkout_moved(self):
+        """Once the cluster is moving, the checkout belongs on the new release."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+
+        proc = self._acquire_then_exit(home_dir, upstream_url, "0.3.0", exit_code=1, apply_started=True)
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertNotIn("was returned to", proc.stdout)
         self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
 
     def test_a_plain_directory_at_the_clone_path_is_not_adopted(self):
@@ -1245,6 +1366,35 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertEqual(self._reported(home_proc, "INSTALL_CHECKOUT"), str(clone_dir))
         self.assertEqual(self._reported(home_proc, "REPO_DIR"), str(clone_dir))
 
+    def test_install_env_pointing_at_the_checkout_by_another_name_still_adopts_it(self):
+        """The variable names a file, not a spelling.
+
+        A symlink is the shape a CI step leaves when it stages the install's
+        config under a fixed path, and a relative path is the shape a hand-run
+        upgrade leaves. Both name the checkout's own install.env; comparing the
+        strings would answer "no" and send the run to a temporary clone, which
+        is the one thing this arm exists to avoid.
+        """
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+        (clone_dir / "install.env").write_text('CLUSTER_NAME="install-a"\n')
+        linked_env = home_dir.parent / "staged-install.env"
+        linked_env.symlink_to(clone_dir / "install.env")
+        neutral = home_dir.parent / "neutral"
+        neutral.mkdir(exist_ok=True)
+
+        proc = self._acquire_through_a_real_pipe(
+            home_dir,
+            upstream_url,
+            "0.3.0",
+            cwd=neutral,
+            extra_env={"KUBE_AGENTS_INSTALL_ENV": str(linked_env)},
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
+        self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), str(clone_dir))
+        self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+
     def test_a_home_checkout_without_install_env_is_not_moved(self):
         """A clone in ~/kube-agents carrying no install.env is not detached onto the release before main() refuses."""
         home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0", with_install_env=False)
@@ -1444,10 +1594,15 @@ class PipedUpgradeResolvesItsSourcesTest(unittest.TestCase):
             # main() checks its CLI tools before resolving sources, the way
             # install.sh does. Stub them, so this test reads the source
             # resolution it is about on any host, rather than whichever tool the
-            # runner happens to be missing.
+            # runner happens to be missing. The list has to be upgrade.sh's
+            # required_tools for this mode, not a subset: the default mode is
+            # full, which asks for jq as well since the harness step reads the
+            # release's plugin image tags with it, and a host without jq would
+            # otherwise stop at the tool gate and fail the assertion below on a
+            # message that has nothing to do with what is under test.
             stub_bin = pathlib.Path(outside) / "bin"
             stub_bin.mkdir()
-            for tool in ("gcloud", "kubectl", "helm", "terraform"):
+            for tool in ("gcloud", "kubectl", "helm", "jq", "terraform"):
                 stub = stub_bin / tool
                 stub.write_text("#!/usr/bin/env bash\nexit 0\n")
                 stub.chmod(0o755)

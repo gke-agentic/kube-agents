@@ -25,9 +25,9 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSI
 
 A full upgrade re-renders the whole install (the `PlatformAgent` CR included) from the install's
 `install.env`, and refuses to proceed without it. `KUBE_AGENTS_INSTALL_ENV` names one outright,
-which is how an ephemeral CI runner supplies it. Otherwise the script finds that configuration on
-its own: in the checkout it runs from, then in the directory you run it from, and last in the
-install checkout the installer left in `$HOME/kube-agents`.
+which is how an ephemeral CI runner supplies it. The order the script searches when it is not set
+is stated once, on the site's
+[upgrade page](../../../docs/site/src/content/docs/install/upgrade.md#before-you-start).
 
 The release bundle is the other supported source, and the one to use when the machine has no
 install checkout. A bundle carries sources and no configuration, so give the run the install's

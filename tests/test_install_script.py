@@ -901,6 +901,15 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
             source,
             "install.sh must not reference k8s-operator/scripts/vars.sh",
         )
+        # The runtime half does not reproduce a removed failure — there is no
+        # longer any code for it to fail against — so it is a guard against the
+        # lookup coming back: a checkout carrying the retired file, with the
+        # bootstrap pointed at the install.env beside it and the run standing in
+        # it, so a reintroduced read relative to either the target or the
+        # working directory would put CLUSTER_NAME in the environment. The
+        # explicit pointer is cleared for the same reason: with
+        # KUBE_AGENTS_INSTALL_ENV set, every shape of this lookup the installer
+        # has ever had returned early.
         with tempfile.TemporaryDirectory() as tmpdir:
             checkout = pathlib.Path(tmpdir)
             retired = checkout / "k8s-operator" / "scripts" / "vars.sh"
@@ -908,7 +917,9 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
             retired.write_text('export CLUSTER_NAME="from-retired-vars"\n')
             missing_env = checkout / "install.env"
             proc = self._run_install_func(
-                f'INSTALL_ENV_EXPLICIT="false"; bootstrap_install_env "{missing_env}"; echo "CLUSTER=${{CLUSTER_NAME:-<unset>}}"'
+                f'INSTALL_ENV_EXPLICIT="false"; bootstrap_install_env "{missing_env}"; echo "CLUSTER=${{CLUSTER_NAME:-<unset>}}"',
+                env={"KUBE_AGENTS_INSTALL_ENV": ""},
+                cwd=checkout,
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("CLUSTER=<unset>", proc.stdout)
