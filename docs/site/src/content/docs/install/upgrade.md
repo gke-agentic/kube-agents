@@ -49,7 +49,8 @@ curl -fsSL https://raw.githubusercontent.com/gke-labs/kube-agents/<RELEASE_VERSI
 The release-pinned script upgrades to its own version, so you pass no tag. It reuses the install
 checkout in `$HOME/kube-agents`, moving it to the release you asked for, and reads the `install.env`
 in it. A checkout with uncommitted changes is left alone and the run stops rather than upgrading
-from sources that do not match the release.
+from sources that do not match the release. Only a release copy is flagless: a copy built from
+`main` carries no version and asks for one, so name a release tag in the URL rather than a branch.
 
 The release bundle is the other supported source, and the one to use on a machine with no install
 checkout:
@@ -119,7 +120,26 @@ exits before Terraform runs and writes nothing.
 
 Neither is refused by an edited checkout either. A preview of what an uncommitted change would
 apply is the one report that answers "what have I edited here", so both previews warn and continue
-where a real upgrade stops.
+where a real upgrade stops. The same split applies when the configuration the run loaded records a
+different install than the flags name — see [Naming the install](#naming-the-install).
+
+What a preview will not do is report on a run that could not happen: with no `install.env` anywhere
+it stops with the same refusal a real upgrade gives, rather than printing a plan you could not
+execute.
+
+## Naming the install
+
+The lookup order above is what keeps the configuration and the target install in step, because
+standing in an install's directory upgrades that install. The piped one-liner has nowhere to stand,
+so on a machine with two installs it loads `$HOME/kube-agents/install.env` whichever cluster the
+flags name — and a full upgrade re-renders the `PlatformAgent` resource from that file, so the
+mismatch writes one install's chat space, allowed users, model provider and namespace into the
+other.
+
+So the run compares them. When `--gcp-project-id`, `--gke-cluster-name` or `--gcp-region` names
+something the loaded `install.env` records differently, a real upgrade refuses and a preview
+reports it and goes on. Point `KUBE_AGENTS_INSTALL_ENV` at the `install.env` of the install you are
+upgrading, run from its checkout, or drop the flag that disagrees.
 
 ## Checking the result
 

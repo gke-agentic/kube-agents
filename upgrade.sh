@@ -1149,17 +1149,25 @@ main() {
   # preview reads its engine from a temporary copy, which has no install.env.
   local install_env_file
   install_env_file="$(resolve_install_env_file "$repo_dir" "$install_checkout")"
-  local state_loaded="false"
   if load_install_env "$install_env_file"; then
-    state_loaded="true"
     print_success "Loaded install configuration from: ${install_env_file}"
-  fi
-  if [ "$state_loaded" != "true" ]; then
+  else
     local searched="${repo_dir}"
     if [ -n "$install_checkout" ] && [ "$install_checkout" != "$repo_dir" ]; then
       searched="${searched} or ${install_checkout}"
     fi
     print_warning "No install configuration (install.env) was found in ${searched}."
+    # Fail closed, and do it here: the upgrade re-renders the PlatformAgent
+    # Custom Resource from this file, so upgrading without it would silently
+    # reset chat, allowed users, dashboard, and model-provider configuration to
+    # blank defaults. The refusal used to sit below the --dry-run exit, which
+    # made the preview answer "here is what would happen" to a run that would
+    # in fact have refused -- and .agents/skills/upgrade-kube-agents/SKILL.md
+    # offers --dry-run as the pre-flight check. A preview of a run that cannot
+    # happen is worth nothing, so both previews stop here with the real run.
+    print_error "Refusing to upgrade without the installation's configuration."
+    print_info "Run upgrade.sh from the directory holding the install's install.env, point KUBE_AGENTS_INSTALL_ENV at one, or keep the install checkout the installer left in \$HOME/kube-agents."
+    exit 1
   fi
   # GITOPS_ORG / GITOPS_REPO are the names; a configuration still carrying
   # GITHUB_ORG / GITHUB_REPO is accepted with a warning. Runs after the load and
@@ -1194,27 +1202,27 @@ main() {
   # merely upgrade the wrong install: it writes A's chat space, allowed users,
   # model provider and NAMESPACE into B. Same split as the dirty checkout and
   # the release-tag cross-check: a real run refuses, a preview reports it.
-  if [ "$state_loaded" = "true" ]; then
-    local coordinate_conflicts=""
-    if [ -n "$PARAM_PROJECT_ID" ] && [ -n "${PROJECT_ID:-}" ] && [ "$PARAM_PROJECT_ID" != "$PROJECT_ID" ]; then
-      coordinate_conflicts="${coordinate_conflicts}    --gcp-project-id=${PARAM_PROJECT_ID}, but PROJECT_ID=${PROJECT_ID}"$'\n'
-    fi
-    if [ -n "$PARAM_CLUSTER_NAME" ] && [ -n "${CLUSTER_NAME:-}" ] && [ "$PARAM_CLUSTER_NAME" != "$CLUSTER_NAME" ]; then
-      coordinate_conflicts="${coordinate_conflicts}    --gke-cluster-name=${PARAM_CLUSTER_NAME}, but CLUSTER_NAME=${CLUSTER_NAME}"$'\n'
-    fi
-    if [ -n "$PARAM_REGION" ] && [ -n "${REGION:-}" ] && [ "$PARAM_REGION" != "$REGION" ]; then
-      coordinate_conflicts="${coordinate_conflicts}    --gcp-region=${PARAM_REGION}, but REGION=${REGION}"$'\n'
-    fi
-    if [ -n "$coordinate_conflicts" ]; then
-      if [ "$PARAM_DRY_RUN" = "true" ] || [ "$PARAM_PLAN" = "true" ]; then
-        print_warning "${install_env_file} was written for another install, and this preview reads it anyway:"
-        printf '%s' "$coordinate_conflicts" >&2
-      else
-        print_error "Refusing to upgrade: ${install_env_file} records a different install than the flags name."
-        printf '%s' "$coordinate_conflicts" >&2
-        print_info "A full upgrade re-renders the PlatformAgent CR from that file, so this would write one install's configuration into another. Point KUBE_AGENTS_INSTALL_ENV at the install.env of the install you are upgrading, run from its checkout, or drop the flags that disagree with it."
-        exit 1
-      fi
+  #
+  # Unconditional: a run with no configuration at all has already stopped above.
+  local coordinate_conflicts=""
+  if [ -n "$PARAM_PROJECT_ID" ] && [ -n "${PROJECT_ID:-}" ] && [ "$PARAM_PROJECT_ID" != "$PROJECT_ID" ]; then
+    coordinate_conflicts="${coordinate_conflicts}    --gcp-project-id=${PARAM_PROJECT_ID}, but PROJECT_ID=${PROJECT_ID}"$'\n'
+  fi
+  if [ -n "$PARAM_CLUSTER_NAME" ] && [ -n "${CLUSTER_NAME:-}" ] && [ "$PARAM_CLUSTER_NAME" != "$CLUSTER_NAME" ]; then
+    coordinate_conflicts="${coordinate_conflicts}    --gke-cluster-name=${PARAM_CLUSTER_NAME}, but CLUSTER_NAME=${CLUSTER_NAME}"$'\n'
+  fi
+  if [ -n "$PARAM_REGION" ] && [ -n "${REGION:-}" ] && [ "$PARAM_REGION" != "$REGION" ]; then
+    coordinate_conflicts="${coordinate_conflicts}    --gcp-region=${PARAM_REGION}, but REGION=${REGION}"$'\n'
+  fi
+  if [ -n "$coordinate_conflicts" ]; then
+    if [ "$PARAM_DRY_RUN" = "true" ] || [ "$PARAM_PLAN" = "true" ]; then
+      print_warning "${install_env_file} was written for another install, and this preview reads it anyway:"
+      printf '%s' "$coordinate_conflicts" >&2
+    else
+      print_error "Refusing to upgrade: ${install_env_file} records a different install than the flags name."
+      printf '%s' "$coordinate_conflicts" >&2
+      print_info "A full upgrade re-renders the PlatformAgent CR from that file, so this would write one install's configuration into another. Point KUBE_AGENTS_INSTALL_ENV at the install.env of the install you are upgrading, run from its checkout, or drop the flags that disagree with it."
+      exit 1
     fi
   fi
 
@@ -1226,16 +1234,6 @@ main() {
     echo -e "  • ${C_CYAN}Secrets:${C_RESET} generate the shell sandbox SSH keypair into '${PLATFORM_AGENT_SECRET}' and '${PLATFORM_AGENT_SHELL_AUTHORIZED_KEYS_SECRET}' only if absent"
     write_report "DRY_RUN_COMPLETE"
     exit 0
-  fi
-
-  # Fail closed without any configuration: the upgrade re-renders the
-  # PlatformAgent Custom Resource from it, so upgrading without it would
-  # silently reset chat, allowed users, dashboard, and model-provider
-  # configuration to blank defaults.
-  if [ "$state_loaded" != "true" ]; then
-    print_error "Refusing to upgrade without the installation's configuration."
-    print_info "Run upgrade.sh from the directory holding the install's install.env, point KUBE_AGENTS_INSTALL_ENV at one, or keep the install checkout the installer left in \$HOME/kube-agents."
-    exit 1
   fi
 
   export PROJECT_ID="$target_project"

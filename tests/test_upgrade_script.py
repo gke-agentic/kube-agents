@@ -1600,9 +1600,9 @@ exit {exit_code}
         adopted at all, so the only directory left to search is this run's own
         temporary clone — and the warning names it.
 
-        It then stops for want of a project, which is the same fact seen from
-        the other end: PROJECT_ID reaches the run through install.env, so the
-        preview above could not have printed one it had not read.
+        The preview then refuses, exactly as the real run would: a preview of a
+        run that cannot happen would be worth nothing, and the skill offers
+        --dry-run as the pre-flight check.
         """
         home_dir, clone_dir, upstream_url, _ = self._existing_clone_fixture(
             "0.2.0", with_install_env=False, real_installer_common=True
@@ -1619,7 +1619,8 @@ exit {exit_code}
         self.assertIn("No install configuration (install.env) was found in", combined)
         self.assertNotIn("Loaded install configuration from", combined)
         self.assertNotIn(str(clone_dir), combined.split("was found in", 1)[1])
-        self.assertIn("A GCP project is required", combined)
+        self.assertIn("Refusing to upgrade without the installation's configuration", combined)
+        self.assertNotIn("Dry-Run Upgrade Plan Preview", combined)
 
     def test_a_piped_upgrade_gets_past_the_refusal_that_sent_1754_here(self):
         """The reported failure, run: `curl … | bash` after a documented install.
