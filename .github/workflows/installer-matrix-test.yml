@@ -110,9 +110,41 @@ jobs:
         run: |
           PATH="$RUNNER_TEMP/kube-agents-test-bin:$PATH" ./uninstall.sh --dry-run -y --gcp-project-id="ci-test-project" --gke-cluster-name="ci-test-cluster" --gcp-region="us-central1"
 
+      # upgrade.sh upgrades an install, and a preview that cannot name one is
+      # worth nothing: with no install.env anywhere the run now stops on the
+      # same refusal a real upgrade gives, so this step has to bring the
+      # configuration an installed cluster would have. It comes from
+      # KUBE_AGENTS_INSTALL_ENV in $RUNNER_TEMP rather than a file in the
+      # checkout, because the assertion below requires that no dry run leaves
+      # an install.env there.
       - name: Validate Dry-Run Upgrade (Non-Interactive)
         run: |
-          PATH="$RUNNER_TEMP/kube-agents-test-bin:$PATH" ./upgrade.sh --dry-run -y --upgrade-mode=full --gcp-project-id="ci-test-project" --image-tag="$GITHUB_SHA"
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/upgrade-install.env" <<'EOF'
+          PROJECT_ID="ci-test-project"
+          CLUSTER_NAME="ci-test-cluster"
+          REGION="us-central1"
+          EOF
+          KUBE_AGENTS_INSTALL_ENV="$RUNNER_TEMP/upgrade-install.env" \
+            PATH="$RUNNER_TEMP/kube-agents-test-bin:$PATH" \
+            ./upgrade.sh --dry-run -y --upgrade-mode=full --gcp-project-id="ci-test-project" --image-tag="$GITHUB_SHA"
+
+          # Negative control: the same preview with nothing to read must refuse
+          # rather than report. HOME is moved as well, because an install
+          # checkout in $HOME/kube-agents is one of the places the run looks.
+          refusal_log="$RUNNER_TEMP/upgrade-refusal.log"
+          set +e
+          env HOME="$RUNNER_TEMP/empty-home" PATH="$RUNNER_TEMP/kube-agents-test-bin:$PATH" \
+            ./upgrade.sh --dry-run -y --upgrade-mode=full --gcp-project-id="ci-test-project" --image-tag="$GITHUB_SHA" \
+            > "$refusal_log" 2>&1
+          refusal_status=$?
+          set -e
+          if [ "$refusal_status" -eq 0 ]; then
+            echo "a preview with no install.env reported a plan instead of refusing:" >&2
+            cat "$refusal_log" >&2
+            exit 1
+          fi
+          grep -q "Refusing to upgrade without the installation's configuration" "$refusal_log"
 
       # The gcloud stub answers NOT_FOUND, so every dry run here takes the
       # fresh-create path — the one case where --gke-cluster-mode has a say. That
