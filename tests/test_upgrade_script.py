@@ -1653,6 +1653,102 @@ exit {exit_code}
         self.assertNotIn("Refusing to upgrade without", combined)
         self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
 
+    def _fixture_configured_for(self, cluster):
+        """A clone whose install.env belongs to a named install."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture(
+            "0.2.0", real_installer_common=True
+        )
+        (clone_dir / "install.env").write_text(
+            f'PROJECT_ID="my-gcp-project"\nCLUSTER_NAME="{cluster}"\n'
+        )
+        return home_dir, clone_dir, upstream_url, commits
+
+    def test_a_run_refuses_when_the_configuration_belongs_to_another_install(self):
+        """Two installs on one workstation, and the piped run has nowhere to stand.
+
+        The lookup order is what usually keeps the configuration and the target
+        in step — standing in an install's directory upgrades that install — and
+        the one-liner has no directory to stand in, so whatever is in
+        $HOME/kube-agents is loaded however the flags aim the run. A full
+        upgrade re-renders the PlatformAgent CR out of that file, so this is not
+        just the wrong install: it is one install's chat space, allowed users
+        and model provider written into another.
+        """
+        home_dir, clone_dir, upstream_url, commits = self._fixture_configured_for("install-a")
+
+        proc = self._whole_run_through_a_real_pipe(
+            home_dir,
+            upstream_url,
+            [
+                "--image-tag=0.3.0",
+                "--upgrade-mode=operator",
+                "--non-interactive",
+                "--gke-cluster-name=install-b",
+            ],
+        )
+
+        combined = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 1, combined)
+        self.assertIn("records a different install than the flags name", combined)
+        self.assertIn("--gke-cluster-name=install-b, but CLUSTER_NAME=install-a", combined)
+        # Refused before anything was applied, so the checkout goes back.
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+
+    def test_a_preview_over_another_installs_configuration_warns_and_goes_on(self):
+        """Previews change nothing, so they report the disagreement and continue.
+
+        The same split the dirty checkout and the release-tag cross-check take:
+        the operator asked what would happen, and the answer includes which file
+        the run would have read.
+        """
+        home_dir, clone_dir, upstream_url, _ = self._fixture_configured_for("install-a")
+
+        proc = self._whole_run_through_a_real_pipe(
+            home_dir,
+            upstream_url,
+            [
+                "--image-tag=0.3.0",
+                "--upgrade-mode=operator",
+                "--non-interactive",
+                "--dry-run",
+                "--gke-cluster-name=install-b",
+            ],
+        )
+
+        combined = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 0, combined)
+        self.assertIn("was written for another install", combined)
+        self.assertIn("--gke-cluster-name=install-b, but CLUSTER_NAME=install-a", combined)
+        self.assertIn("Dry-Run Upgrade Plan Preview", combined)
+
+    def test_a_flag_that_agrees_with_the_configuration_is_not_a_conflict(self):
+        """The ordinary case: the documented one-liner names its own install.
+
+        Without this the refusal above could be firing on the flag's presence
+        rather than on a disagreement, and every documented upgrade would stop.
+        """
+        home_dir, clone_dir, upstream_url, commits = self._fixture_configured_for("install-a")
+
+        proc = self._whole_run_through_a_real_pipe(
+            home_dir,
+            upstream_url,
+            [
+                "--image-tag=0.3.0",
+                "--upgrade-mode=operator",
+                "--non-interactive",
+                "--gke-cluster-name=install-a",
+                "--gcp-project-id=my-gcp-project",
+            ],
+            gcloud_exit=1,
+        )
+
+        combined = proc.stdout + proc.stderr
+        self.assertNotIn("another install", combined)
+        self.assertNotIn("Refusing to upgrade", combined)
+        # It stopped where the previous test's run did: at the credentials fetch.
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+
 
 class ConfigurationLookupOrderTest(unittest.TestCase):
     """Which install.env an upgrade loads, when more than one is reachable.
@@ -1822,6 +1918,108 @@ class FrontDoorsAgreeOnTheInstallCheckoutTest(unittest.TestCase):
                 paths[script.name] = proc.stdout.strip()
         self.assertEqual(paths["install.sh"], "/h/kube-agents")
         self.assertEqual(paths["upgrade.sh"], paths["install.sh"])
+
+
+class UpgradeRunsAreSerialisedTest(unittest.TestCase):
+    """One upgrade at a time, the way install.sh and uninstall.sh already are.
+
+    An upgrade moves $HOME/kube-agents onto the release it is applying and then
+    reads terraform and charts out of it, so two at once would have the second
+    assembling a composition from whichever revision the first had the checkout
+    on at that moment.
+    """
+
+    _FRONT_DOORS = ("install.sh", "uninstall.sh", "upgrade.sh")
+
+    def test_every_front_door_takes_a_lock_of_its_own(self):
+        """Each locks, none shares a lock file with another.
+
+        A shared file would serialise operations that have no reason to wait on
+        each other, and would give an install a new way to be stuck behind an
+        upgrade.
+        """
+        defaults = {}
+        for name in self._FRONT_DOORS:
+            with self.subTest(script=name):
+                text = (_REPO_ROOT / name).read_text()
+                # Two spellings: uninstall.sh fixes its path, the other two let
+                # KUBE_AGENTS_LOCK_FILE move it. What this test is about is that
+                # each has a lock and that no two default to the same file.
+                match = re.search(
+                    r'LOCK_FILE="(?:\$\{KUBE_AGENTS_LOCK_FILE:-)?([^"}]+)\}?"', text
+                )
+                self.assertIsNotNone(match, f"{name} takes no lock ({len(text)} chars read)")
+                self.assertIn("flock -n 200", text, f"{name}'s lock waits instead of reporting")
+                defaults[name] = match.group(1)
+        self.assertEqual(len(set(defaults.values())), len(defaults), defaults)
+
+    def test_the_lock_is_not_taken_when_the_script_is_only_sourced(self):
+        """The suite sources upgrade.sh; a lock at source time would serialise it
+        against itself, and against any upgrade running on the same machine."""
+        text = _UPGRADE_SH.read_text()
+        guard = text.index('if [ "${KUBE_AGENTS_SOURCE_ONLY:-false}" != "true" ] && command -v flock')
+        self.assertLess(guard, text.index("flock -n 200"))
+
+    def test_a_second_run_stops_while_the_first_holds_the_lock(self):
+        """The property, not its spelling: with the lock held, the run reports and exits."""
+        if shutil.which("flock") is None:
+            self.skipTest("flock is not available on this host")
+        with tempfile.TemporaryDirectory(prefix="upgrade-lock-") as tmp:
+            lock_file = pathlib.Path(tmp) / "upgrade.lock"
+            lock_file.touch()
+            holder = subprocess.Popen(
+                ["flock", str(lock_file), "-c", "sleep 30"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                # Given a moment to take it: flock(1) opens the file and blocks
+                # before exec'ing, and a race here would test nothing at all.
+                deadline = time.time() + 10
+                while time.time() < deadline:
+                    probe = subprocess.run(
+                        ["flock", "-n", str(lock_file), "-c", "true"], capture_output=True
+                    )
+                    if probe.returncode != 0:
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("the holder never took the lock")
+
+                proc = subprocess.run(
+                    ["bash", "-s", "--", "--help"],
+                    input=_UPGRADE_SH.read_text(),
+                    capture_output=True,
+                    text=True,
+                    env=get_isolated_test_env(
+                        overrides={"KUBE_AGENTS_LOCK_FILE": str(lock_file), "HOME": tmp}
+                    ),
+                    cwd=tmp,
+                )
+            finally:
+                holder.kill()
+                holder.wait()
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("Another instance of the kube-agents upgrade", proc.stdout + proc.stderr)
+
+    def test_a_free_lock_lets_the_run_through(self):
+        """The control: the same run with nothing holding the lock answers normally."""
+        if shutil.which("flock") is None:
+            self.skipTest("flock is not available on this host")
+        with tempfile.TemporaryDirectory(prefix="upgrade-lock-free-") as tmp:
+            lock_file = pathlib.Path(tmp) / "upgrade.lock"
+            proc = subprocess.run(
+                ["bash", "-s", "--", "--help"],
+                input=_UPGRADE_SH.read_text(),
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(
+                    overrides={"KUBE_AGENTS_LOCK_FILE": str(lock_file), "HOME": tmp}
+                ),
+                cwd=tmp,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("Another instance", proc.stdout + proc.stderr)
 
 
 class PipedUpgradeResolvesItsSourcesTest(unittest.TestCase):

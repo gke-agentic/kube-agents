@@ -97,6 +97,28 @@ UPGRADE_APPLY_STARTED="false"
 # KUBE_AGENTS_REPO_URL.
 SOURCES_ADOPTED_CHECKOUT="false"
 
+# ─── Process Lock File ───────────────────────────────────────────────────────
+# install.sh and uninstall.sh have always taken one; the upgrade had not, and
+# it now moves $HOME/kube-agents onto the release it is applying. Two runs at
+# once would take turns detaching that one checkout while both read terraform
+# and charts out of it, so the second would apply a composition assembled from
+# whichever revision the first had it on at the time.
+#
+# Its own lock file, not the installer's: these are different operations, and
+# an install that waited on an upgrade's lock would be a new way to be stuck.
+# The KUBE_AGENTS_SOURCE_ONLY guard is install.sh's and is load-bearing here
+# too -- the test suite sources this file, and a lock taken at source time
+# would make the suite serialise against itself.
+LOCK_FILE="${KUBE_AGENTS_LOCK_FILE:-/tmp/kube-agents-upgrade.lock}"
+if [ "${KUBE_AGENTS_SOURCE_ONLY:-false}" != "true" ] && command -v flock >/dev/null 2>&1; then
+  if ( : >"$LOCK_FILE" ) 2>/dev/null && exec 200>"$LOCK_FILE"; then
+    if ! flock -n 200 2>/dev/null; then
+      echo -e "  \033[93m⚠ Another instance of the kube-agents upgrade is currently running. Exiting.\033[0m" >&2
+      exit 1
+    fi
+  fi
+fi
+
 restore_moved_checkout() {
   [ -n "$MOVED_CHECKOUT_DIR" ] || return 0
   [ -d "$MOVED_CHECKOUT_DIR" ] || return 0
@@ -1162,6 +1184,39 @@ main() {
 
   print_info "GCP Target Project: ${C_BOLD}${target_project}${C_RESET}"
   print_info "GKE Target Cluster: ${C_BOLD}${target_cluster}${C_RESET} (${target_region})"
+
+  # The loaded configuration records the install it belongs to, and the flags
+  # can name a different one. The lookup order is what usually keeps those in
+  # step -- standing in an install's directory upgrades that install -- but the
+  # piped one-liner has nowhere to stand, so $HOME/kube-agents/install.env is
+  # what gets loaded whatever --gke-cluster-name says. A full upgrade
+  # re-renders the PlatformAgent CR from that file, so the mismatch does not
+  # merely upgrade the wrong install: it writes A's chat space, allowed users,
+  # model provider and NAMESPACE into B. Same split as the dirty checkout and
+  # the release-tag cross-check: a real run refuses, a preview reports it.
+  if [ "$state_loaded" = "true" ]; then
+    local coordinate_conflicts=""
+    if [ -n "$PARAM_PROJECT_ID" ] && [ -n "${PROJECT_ID:-}" ] && [ "$PARAM_PROJECT_ID" != "$PROJECT_ID" ]; then
+      coordinate_conflicts="${coordinate_conflicts}    --gcp-project-id=${PARAM_PROJECT_ID}, but PROJECT_ID=${PROJECT_ID}"$'\n'
+    fi
+    if [ -n "$PARAM_CLUSTER_NAME" ] && [ -n "${CLUSTER_NAME:-}" ] && [ "$PARAM_CLUSTER_NAME" != "$CLUSTER_NAME" ]; then
+      coordinate_conflicts="${coordinate_conflicts}    --gke-cluster-name=${PARAM_CLUSTER_NAME}, but CLUSTER_NAME=${CLUSTER_NAME}"$'\n'
+    fi
+    if [ -n "$PARAM_REGION" ] && [ -n "${REGION:-}" ] && [ "$PARAM_REGION" != "$REGION" ]; then
+      coordinate_conflicts="${coordinate_conflicts}    --gcp-region=${PARAM_REGION}, but REGION=${REGION}"$'\n'
+    fi
+    if [ -n "$coordinate_conflicts" ]; then
+      if [ "$PARAM_DRY_RUN" = "true" ] || [ "$PARAM_PLAN" = "true" ]; then
+        print_warning "${install_env_file} was written for another install, and this preview reads it anyway:"
+        printf '%s' "$coordinate_conflicts" >&2
+      else
+        print_error "Refusing to upgrade: ${install_env_file} records a different install than the flags name."
+        printf '%s' "$coordinate_conflicts" >&2
+        print_info "A full upgrade re-renders the PlatformAgent CR from that file, so this would write one install's configuration into another. Point KUBE_AGENTS_INSTALL_ENV at the install.env of the install you are upgrading, run from its checkout, or drop the flags that disagree with it."
+        exit 1
+      fi
+    fi
+  fi
 
   if [ "$PARAM_DRY_RUN" = "true" ]; then
     print_step "2. Dry-Run Upgrade Plan Preview"
