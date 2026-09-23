@@ -343,6 +343,19 @@ class UpgradeRunContractTest(unittest.TestCase):
                         "would leave the adopted checkout detached",
                     )
 
+    def test_tfvars_generation_is_snapshotted_and_scoped_to_terraform_modes(self):
+        """write_tfvars_from_state runs before full's KMS/SA refusals, so main() must snapshot first and skip non-Terraform modes."""
+        source = _UPGRADE_SH.read_text()
+        guard = 'if [ "$PARAM_UPGRADE_MODE" = "full" ] || [ "$PARAM_PLAN" = "true" ]; then'
+        snap = 'snapshot_moved_checkout_tfvars "${repo_dir}/terraform/examples/full-install/terraform.tfvars"'
+        write = 'write_tfvars_from_state "${repo_dir}/terraform/examples/full-install/terraform.tfvars" "$PARAM_IMAGE_TAG"'
+        self.assertIn(guard, source)
+        guard_at = source.index(guard)
+        block = source[guard_at : source.index("\n  fi\n", guard_at)]
+        self.assertIn(snap, block)
+        self.assertIn(write, block)
+        self.assertLess(block.index(snap), block.index(write))
+
 
 class DirtyCheckoutRefusalTest(unittest.TestCase):
     """A tagless upgrade still applies this checkout to a live install.
@@ -1118,7 +1131,9 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertIn(f"but {upstream_url} names {commits['0.3.0']}", combined)
         self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
 
-    def _acquire_then_exit(self, home_dir, upstream_url, requested_ref, exit_code, apply_started=False):
+    def _acquire_then_exit(
+        self, home_dir, upstream_url, requested_ref, exit_code, apply_started=False, between=""
+    ):
         """Move the clone, then leave with a status, through the real EXIT trap.
 
         Written as one bash run rather than by calling restore_moved_checkout
@@ -1137,6 +1152,7 @@ KUBE_AGENTS_REPO_URL="{upstream_url}"
 repo_dir=""
 install_checkout=""
 acquire_upgrade_sources repo_dir install_checkout "{requested_ref}"
+{between}
 {applied_line}
 exit {exit_code}
 """
@@ -1178,6 +1194,55 @@ exit {exit_code}
         self.assertEqual(proc.returncode, 1)
         self.assertNotIn("was returned to", proc.stdout)
         self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
+
+    def test_a_run_that_fails_after_tfvars_generation_restores_the_previous_tfvars(self):
+        """A refusal after write_tfvars_from_state must not leave N+1's tfvars beside N's composition.
+
+        terraform.tfvars is gitignored, so `git checkout <prev>` alone leaves
+        the newly rendered file in place: a hand-run `terraform apply` in the
+        returned checkout would then apply N+1's image_tag and variables with
+        N's composition.
+        """
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+        tfvars = clone_dir / "terraform" / "examples" / "full-install" / "terraform.tfvars"
+        tfvars.parent.mkdir(parents=True, exist_ok=True)
+        tfvars.write_text('image_tag = "0.2.0"\n')
+
+        proc = self._acquire_then_exit(
+            home_dir,
+            upstream_url,
+            "0.3.0",
+            exit_code=1,
+            between=(
+                'snapshot_moved_checkout_tfvars "${repo_dir}/terraform/examples/full-install/terraform.tfvars"\n'
+                'printf \'image_tag = "0.3.0"\\n\' > "${repo_dir}/terraform/examples/full-install/terraform.tfvars"'
+            ),
+        )
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+        self.assertEqual(tfvars.read_text(), 'image_tag = "0.2.0"\n')
+
+    def test_a_run_that_fails_after_tfvars_generation_removes_newly_created_tfvars(self):
+        """When the checkout had no terraform.tfvars before the run, restoring removes the rendered one."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+        tfvars = clone_dir / "terraform" / "examples" / "full-install" / "terraform.tfvars"
+        tfvars.parent.mkdir(parents=True, exist_ok=True)
+
+        proc = self._acquire_then_exit(
+            home_dir,
+            upstream_url,
+            "0.3.0",
+            exit_code=1,
+            between=(
+                'snapshot_moved_checkout_tfvars "${repo_dir}/terraform/examples/full-install/terraform.tfvars"\n'
+                'printf \'image_tag = "0.3.0"\\n\' > "${repo_dir}/terraform/examples/full-install/terraform.tfvars"'
+            ),
+        )
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+        self.assertFalse(tfvars.exists())
 
     def test_a_plain_directory_at_the_clone_path_is_not_adopted(self):
         """A stale bundle or a copied tree in HOME is not verified release sources.

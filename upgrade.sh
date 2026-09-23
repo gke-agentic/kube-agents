@@ -89,6 +89,8 @@ TEMP_REPO_DIR=""
 MOVED_CHECKOUT_DIR=""
 MOVED_CHECKOUT_PREV_HEAD=""
 MOVED_CHECKOUT_PREV_BRANCH=""
+MOVED_CHECKOUT_TFVARS_PATH=""
+MOVED_CHECKOUT_PREV_TFVARS=""
 UPGRADE_APPLY_STARTED="false"
 # Set when the sources came from a checkout that was already on disk rather
 # than from a fetch this run made. See verify_local_source_ref: a tag in a
@@ -119,6 +121,22 @@ if [ "${KUBE_AGENTS_SOURCE_ONLY:-false}" != "true" ] && command -v flock >/dev/n
   fi
 fi
 
+# Remember the gitignored terraform.tfvars in an adopted checkout before
+# write_tfvars_from_state overwrites it for the target release. A git checkout
+# back to the previous revision leaves untracked and gitignored files behind, so
+# without this a run that refuses after write_tfvars_from_state (the KMS or
+# service-account guard in full mode) would return the checkout to N while
+# leaving N+1's terraform.tfvars sitting in its composition directory.
+snapshot_moved_checkout_tfvars() {
+  local tfvars_path="$1"
+  [ -n "$MOVED_CHECKOUT_DIR" ] || return 0
+  MOVED_CHECKOUT_TFVARS_PATH="$tfvars_path"
+  if [ -f "$tfvars_path" ]; then
+    MOVED_CHECKOUT_PREV_TFVARS="$(umask 077 && mktemp "${TMPDIR:-/tmp}/kube-agents-prev-tfvars.XXXXXX")"
+    cp -p "$tfvars_path" "$MOVED_CHECKOUT_PREV_TFVARS"
+  fi
+}
+
 restore_moved_checkout() {
   [ -n "$MOVED_CHECKOUT_DIR" ] || return 0
   [ -d "$MOVED_CHECKOUT_DIR" ] || return 0
@@ -126,6 +144,15 @@ restore_moved_checkout() {
   if [ -n "$MOVED_CHECKOUT_PREV_BRANCH" ]; then
     target="$MOVED_CHECKOUT_PREV_BRANCH"
     what="branch '${MOVED_CHECKOUT_PREV_BRANCH}'"
+  fi
+  if [ -n "$MOVED_CHECKOUT_TFVARS_PATH" ]; then
+    if [ -n "$MOVED_CHECKOUT_PREV_TFVARS" ] && [ -f "$MOVED_CHECKOUT_PREV_TFVARS" ]; then
+      mv -f "$MOVED_CHECKOUT_PREV_TFVARS" "$MOVED_CHECKOUT_TFVARS_PATH"
+    else
+      rm -f -- "$MOVED_CHECKOUT_TFVARS_PATH"
+    fi
+    MOVED_CHECKOUT_TFVARS_PATH=""
+    MOVED_CHECKOUT_PREV_TFVARS=""
   fi
   # Best effort by necessity: this runs from the EXIT trap of a run that has
   # already failed, and a checkout the operator has since edited is theirs to
@@ -142,6 +169,9 @@ cleanup() {
   local exit_code="$?"
   if [ "$exit_code" -ne 0 ] && [ "$UPGRADE_APPLY_STARTED" != "true" ]; then
     restore_moved_checkout
+  fi
+  if [ -n "$MOVED_CHECKOUT_PREV_TFVARS" ] && [ -f "$MOVED_CHECKOUT_PREV_TFVARS" ]; then
+    rm -f -- "$MOVED_CHECKOUT_PREV_TFVARS"
   fi
   if [ -n "$TEMP_REPO_DIR" ] && [ -d "$TEMP_REPO_DIR" ]; then
     rm -rf -- "$TEMP_REPO_DIR"
@@ -1390,10 +1420,18 @@ main() {
       print_warning "Helm release '${KUBE_AGENTS_HELM_RELEASE}' is currently in '${current_helm_status}'. Note: rollback is skipped in plan mode."
     fi
   fi
-  # NAMESPACE steers the generator's Secret-recovery reads (install.env omits
-  # credentials when PERSIST_SECRETS_ON_DISK=false; the live Secret has them).
-  NAMESPACE="$target_namespace" \
-    write_tfvars_from_state "${repo_dir}/terraform/examples/full-install/terraform.tfvars" "$PARAM_IMAGE_TAG"
+  # Only full and --plan run Terraform; operator and harness re-tag the
+  # installed Helm release directly and never read terraform.tfvars, so
+  # rendering one for them would leave the target release's tfvars in the
+  # checkout when only the operator or harness moved (or when harness_retag_keys
+  # refuses before UPGRADE_APPLY_STARTED).
+  if [ "$PARAM_UPGRADE_MODE" = "full" ] || [ "$PARAM_PLAN" = "true" ]; then
+    snapshot_moved_checkout_tfvars "${repo_dir}/terraform/examples/full-install/terraform.tfvars"
+    # NAMESPACE steers the generator's Secret-recovery reads (install.env omits
+    # credentials when PERSIST_SECRETS_ON_DISK=false; the live Secret has them).
+    NAMESPACE="$target_namespace" \
+      write_tfvars_from_state "${repo_dir}/terraform/examples/full-install/terraform.tfvars" "$PARAM_IMAGE_TAG"
+  fi
 
   if [ "$PARAM_PLAN" = "true" ]; then
     print_step "4. Planning (read-only)"
