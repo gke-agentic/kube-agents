@@ -623,7 +623,7 @@ remote_release_tag_commit() {
 # object name is self-verifying — a checkout cannot hold a different tree under
 # the same SHA — so it needs no second opinion from the remote.
 ref_is_commit_sha() {
-  printf '%s' "${1:-}" | grep -Eq '^[0-9a-f]{40}$'
+  printf '%s' "${1:-}" | grep -Eq '^[0-9a-fA-F]{40}$'
 }
 
 verify_local_source_ref() {
@@ -1515,9 +1515,9 @@ main() {
   # two arms still refuse after the dispatch and before they write anything:
   # full runs the minter/KMS guard and the service-account 409 check, and
   # harness reads the release's values to learn which plugin tags to move. A run
-  # that stops on one of those has put nothing on the cluster, so the checkout
-  # this run detached has to go back. Each arm therefore flips the gate on its
-  # own last line before its first mutating command, and
+  # that stops on one of those has applied none of the new release, so the
+  # checkout this run detached has to go back. Each arm therefore flips the gate
+  # on its own last line before its first mutating command, and
   # UpgradeRunContractTest.test_the_apply_gate_sits_after_every_refusal_in_its_arm
   # pins that placement, which is otherwise unreachable from the test suite.
   case "$PARAM_UPGRADE_MODE" in

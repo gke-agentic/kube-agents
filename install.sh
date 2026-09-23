@@ -4653,6 +4653,7 @@ main() {
       hindsight) memory_choice="2" ;;
       off) memory_choice="3" ;;
     esac
+    local memory_seed_choice="$memory_choice"
     case "$memory_choice" in
       2) mem_tag_hind=" (Default)" ;;
       3) mem_tag_off=" (Default)" ;;
@@ -4672,7 +4673,32 @@ main() {
       2) memory_mode="hindsight" ;;
       3) memory_mode="off" ;;
     esac
-    PARAM_MEMORY_EXPLICIT="true"
+    # Not unconditional, which is what it used to be. When nothing stated a
+    # memory mode, resolve_shared_defaults has already put DEFAULT_MEMORY
+    # (`file`) into PARAM_MEMORY, so the seed above is 1 and the "(Default)" tag
+    # sits on the file store because of a project-wide default, not because this
+    # install chose it. prompt_menu returns that same 1 for a bare enter, so
+    # marking it explicit turns "the operator said nothing" into "the operator
+    # chose file" -- and that skips live_hindsight_state in the generator, which
+    # is the whole of what stands between a Hindsight install whose install.env
+    # predates the MEMORY key and an apply that deletes hindsight-postgresql and
+    # its database. That is the population the retirement of vars.sh created:
+    # before it, a pre-0.4.0 checkout seeded this prompt on option 2 from the
+    # MEMORY_PROVIDER that file carried, so enter kept Hindsight.
+    #
+    # Moving off the seeded option is a statement, and so is an install.env or
+    # --memory that set PARAM_MEMORY_EXPLICIT before the interview. What is left
+    # -- accepting the seed when nothing seeded it -- is deliberately read as
+    # "no answer" and handed to the probe. A typed "1" is indistinguishable from
+    # enter here (prompt_menu returns the number either way), so it is read the
+    # same: on a cluster running Hindsight the generator then preserves it and
+    # says so, and the pre-flight summary shows the store the apply will keep
+    # before anything is applied. Losing an argument with the operator that way
+    # costs one re-run with --memory=file; losing it the other way costs the
+    # database.
+    if [ "$PARAM_MEMORY_EXPLICIT" = "true" ] || [ "$memory_choice" != "$memory_seed_choice" ]; then
+      PARAM_MEMORY_EXPLICIT="true"
+    fi
   fi
 
   # bootstrap_install_env_file records PARAM_MEMORY, not this local, so the

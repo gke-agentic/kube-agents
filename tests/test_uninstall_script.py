@@ -544,7 +544,67 @@ class SourceRefDispatchTest(unittest.TestCase):
         combined = proc.stdout + proc.stderr
         self.assertEqual(proc.returncode, 1, combined)
         self.assertIn("records a different install than the flags name", combined)
+        # The flags here name two of the three coordinates, so the guess is not
+        # dropped -- and the refusal has to say what would get past it, because
+        # the three generic ways out do not fit an install with no install.env.
+        self.assertIn("name all three of", combined)
         self.assertIsNone(log)
+
+    def test_a_stranger_in_home_does_not_block_a_fully_named_teardown(self):
+        """The case --source-ref exists for, on a workstation that is not empty.
+
+        A pre-0.4.0 install has no install.env of its own, so the lookup falls
+        through to $HOME/kube-agents/install.env — which belongs to whichever
+        install the installer made last, not to the one being torn down.
+        Loading that and then refusing on the coordinate conflict left an
+        operator with none of the three ways out the refusal names: there is
+        nothing to point KUBE_AGENTS_INSTALL_ENV at, the old install's checkout
+        carries no file either so the lookup lands back here, and dropping the
+        flags aims the teardown at the other install.
+
+        So a guess that contradicts a fully named teardown is not read at all.
+        Its other keys matter as much as its coordinates: NAMESPACE here would
+        otherwise be exported into the release this arm execs, which for a
+        pre-0.4.0 ref does not read install.env but does inherit the
+        environment.
+        """
+        proc, log = self._run(
+            ref_carries_uninstall=True,
+            ref_speaks_domain_scoped=True,
+            args=[
+                "--source-ref=v0.3.0",
+                "--non-interactive",
+                "--gcp-project-id=project-b",
+                "--gke-cluster-name=install-b",
+                "--gcp-region=us-west1",
+            ],
+            home_install_env=(
+                'PROJECT_ID="project-a"\n'
+                'CLUSTER_NAME="install-a"\n'
+                'REGION="us-east1"\n'
+                'NAMESPACE="install-a-ns"\n'
+            ),
+        )
+        combined = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 0, combined)
+        self.assertIn("Not reading", combined)
+        self.assertIn("records a different install", combined)
+        self.assertNotIn("Refusing to tear down", combined)
+        # A file WAS found; saying none was would contradict the warning above.
+        self.assertNotIn("No install configuration (install.env) was found", combined)
+        self.assertIsNotNone(log, combined)
+        # Exactly the flags, and nothing out of the stranger's file: no
+        # --agent-namespace from its NAMESPACE, and no exported
+        # KUBE_AGENTS_INSTALL_ENV pointing the child back at it.
+        self.assertEqual(
+            log.split(),
+            [
+                "--non-interactive",
+                "--gcp-project-id=project-b",
+                "--gke-cluster-name=install-b",
+                "--gcp-region=us-west1",
+            ],
+        )
 
     def test_source_ref_says_so_when_it_finds_no_install_env(self):
         """The dangerous case the arm used to pass over in silence.

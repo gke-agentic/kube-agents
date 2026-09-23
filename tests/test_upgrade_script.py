@@ -316,6 +316,70 @@ class UpgradeRunContractTest(unittest.TestCase):
             with self.subTest(var=var):
                 self.assertIn(f'export {var}="$target_', source)
 
+    def test_the_generator_call_asks_for_a_memory_answer(self):
+        """upgrade.sh's half of the Hindsight guard.
+
+        When the generator cannot tell whether the cluster runs the Hindsight
+        memory store and nothing named a memory mode, it refuses only for
+        callers that opt in through KUBE_AGENTS_REQUIRE_MEMORY_ANSWER; without
+        it, it takes the warn-and-continue arm that uninstall.sh wants and
+        writes memory_provider = "multiuser_memory". An upgrade then applies
+        that, and a --plan renders the same tfvars for the apply that follows
+        it — so a `full` upgrade of an install whose install.env carries no
+        MEMORY, against a cluster kubectl cannot read, would plan the database
+        away.
+
+        Nothing else in this file would notice its loss. No whole-run test
+        reaches the generator: --dry-run runs exit at the preview above it,
+        --plan runs stop on the coordinate conflict, and the real runs are
+        driven with a failing gcloud and stop at the credentials fetch. The
+        snapshot test matches the bare `write_tfvars_from_state …` line, which
+        a deleted continuation line above it does not affect. The CI matrix's
+        upgrade step is --dry-run only.
+
+        Enumerated rather than matched as a substring, for the reason the
+        install.sh version of this test gives: a substring is satisfied by one
+        call site while a second walks into the default.
+        """
+        lines = _UPGRADE_SH.read_text().splitlines()
+        call_sites, unguarded = [], []
+        for index, line in enumerate(lines):
+            code_line = line.split("#", 1)[0].strip()
+            if not re.search(r"\bwrite_tfvars_from_state\b", code_line) or code_line.startswith("write_tfvars_from_state()"):
+                continue
+            # Collect the `VAR=value \` continuation lines the call hangs off,
+            # plus the call line itself for single-line `VAR=value fn ...`.
+            prefix, back = [line], index - 1
+            while back >= 0 and lines[back].rstrip().endswith("\\"):
+                prefix.append(lines[back])
+                back -= 1
+            # Named by the function it sits in, not by a line number an edit
+            # anywhere above would move.
+            enclosing = next(
+                (
+                    lines[up][: lines[up].index("()")]
+                    for up in range(index, -1, -1)
+                    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*\(\) \{$", lines[up])
+                ),
+                f"<top level, line {index + 1}>",
+            )
+            call_sites.append(enclosing)
+            if "KUBE_AGENTS_REQUIRE_MEMORY_ANSWER=true" not in "\n".join(prefix):
+                unguarded.append(enclosing)
+
+        self.assertEqual(
+            call_sites,
+            ["main"],
+            "upgrade.sh gained or lost a tfvars generator call site",
+        )
+        self.assertEqual(
+            unguarded,
+            [],
+            "a generator call in upgrade.sh lost the memory opt-in; every upgrade "
+            "applies, and --plan renders the same tfvars, so none of them may fall "
+            "through to multiuser_memory when the cluster could not be asked",
+        )
+
     def test_the_apply_gate_sits_after_every_refusal_in_its_arm(self):
         """UPGRADE_APPLY_STARTED is what keeps cleanup() from putting an adopted
         checkout back, so a run that raises it and then refuses strands someone
@@ -1705,7 +1769,13 @@ exit {exit_code}
         script = _UPGRADE_SH.read_text()
         default_remote = 'KUBE_AGENTS_REPO_URL="https://github.com/gke-labs/kube-agents.git"'
         self.assertIn(default_remote, script, "the remote is no longer a plain assignment to substitute")
-        env = get_isolated_test_env(overrides={"HOME": str(home_dir)}, bin_dir=str(stub_bin))
+        env = get_isolated_test_env(
+            overrides={
+                "HOME": str(home_dir),
+                "KUBE_AGENTS_LOCK_FILE": str(base / "upgrade.lock"),
+            },
+            bin_dir=str(stub_bin),
+        )
         # The run has to resolve the file for itself; a pointer in the
         # developer's environment would answer before the hand-off did.
         env.pop("KUBE_AGENTS_INSTALL_ENV", None)
@@ -1781,11 +1851,12 @@ exit {exit_code}
     def test_a_piped_upgrade_gets_past_the_refusal_that_sent_1754_here(self):
         """The reported failure, run: `curl … | bash` after a documented install.
 
-        The preview above cannot answer this one, because --dry-run exits above
-        the fail-closed refusal. So this is a real run, stopped at the first
-        thing that needs a cluster: the credentials fetch. What it owes is the
-        ground it covered before that — configuration loaded, no refusal — and
-        the checkout it detached handed back, since nothing was applied.
+        Unlike the preview above, a real run adopts the install checkout onto
+        the requested ref and relies on restore_moved_checkout to roll it back
+        if the run fails before applying. So this is a real run, stopped at the
+        first thing that needs a cluster: the credentials fetch. What it owes is
+        the ground it covered before that — configuration loaded, no refusal —
+        and the checkout it detached handed back, since nothing was applied.
 
         It is not the test that pins the hand-off's second argument: a real run
         adopts the install checkout as its sources, so repo_dir and

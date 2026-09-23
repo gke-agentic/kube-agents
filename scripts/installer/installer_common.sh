@@ -1723,7 +1723,7 @@ write_tfvars_from_state() {
       present)
         memory_provider="kube_agents_memory"
         export MEMORY_PROVIDER="kube_agents_memory"
-        print_info "This cluster runs the Hindsight memory store and no memory mode was given, so it is preserved (memory_provider = \"kube_agents_memory\"). Pass --memory=file or --memory=off, or record MEMORY in install.env, to replace it."
+        print_info "This cluster runs the Hindsight memory store and no memory mode was given, so it is preserved (memory_provider = \"kube_agents_memory\"). Record MEMORY=file or MEMORY=off in install.env (install.sh also takes --memory=file or --memory=off) to replace it."
         ;;
       absent)
         # The API server answered, and answered NotFound for both objects. The

@@ -248,7 +248,7 @@ _REFERENCE = re.compile(
 def _expand(value, scope):
     """Substitute `$VAR` and `${VAR}` from keys the file has already set.
 
-    The installers load these files with `set -a; . install.env; set +a`, and
+    The installers load the file with `set -a; . install.env; set +a`, and
     install.env.example advertises shell syntax -- so `CLUSTER_NAME=${PROJECT_ID}-host`
     is legal and the installers resolve it. Reading it literally instead is the
     silent failure this guard exists to prevent: the context below becomes

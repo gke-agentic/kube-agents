@@ -2244,10 +2244,12 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
         lines = _INSTALL_SH.read_text().splitlines()
         unguarded = []
         for index, line in enumerate(lines):
-            if not line.strip().startswith("write_tfvars_from_state "):
+            code_line = line.split("#", 1)[0].strip()
+            if not re.search(r"\bwrite_tfvars_from_state\b", code_line) or code_line.startswith("write_tfvars_from_state()"):
                 continue
-            # Collect the `VAR=value \` continuation lines the call hangs off.
-            prefix, back = [], index - 1
+            # Collect the `VAR=value \` continuation lines the call hangs off,
+            # plus the call line itself for single-line `VAR=value fn ...`.
+            prefix, back = [line], index - 1
             while back >= 0 and lines[back].rstrip().endswith("\\"):
                 prefix.append(lines[back])
                 back -= 1
@@ -2270,6 +2272,74 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
             ["settle_network_policy_acceptance"],
             "a generator call site gained or lost the memory opt-in; if the new one "
             "is followed by an apply it needs KUBE_AGENTS_REQUIRE_MEMORY_ANSWER=true",
+        )
+
+    def test_accepting_the_memory_prompts_unseeded_default_is_not_an_answer(self):
+        """A bare enter on the memory menu must not count as a stated mode.
+
+        resolve_shared_defaults puts DEFAULT_MEMORY (`file`) into PARAM_MEMORY
+        before the interview, so the menu is seeded on option 1 and carries the
+        "(Default)" tag even when nothing chose it — and prompt_menu returns
+        that same 1 for enter as for a typed "1". Marking the answer explicit
+        there skips live_hindsight_state in the generator, and a Hindsight
+        install whose install.env predates the MEMORY key then has
+        hindsight-postgresql and its database planned away by the apply that
+        follows. Before this branch retired vars.sh, such a checkout seeded the
+        prompt on option 2 out of the MEMORY_PROVIDER that file carried, so
+        enter kept Hindsight; the probe is what replaced that seed, and the
+        interactive path has to be able to reach it.
+
+        Pinned against the source, and by enumeration rather than substring:
+        the block sits inside main()'s interview behind a TTY, where the
+        harness in this file cannot reach it, and a substring assertion stays
+        green when a second, unconditional assignment is added beside the
+        guarded one — which is exactly how the Day-2 panel above slipped
+        through.
+        """
+        lines = _INSTALL_SH.read_text().splitlines()
+        # The only two conditions under which an answer counts as stated.
+        guards = {
+            # Something set PARAM_MEMORY before the interview: install.env's
+            # MEMORY or MEMORY_PROVIDER, or MEMORY in the environment.
+            'if [ -n "$PARAM_MEMORY" ]; then',
+            # The interview: a statement is either one that arrived before it,
+            # or the operator moving off the option the seed put under them.
+            'if [ "$PARAM_MEMORY_EXPLICIT" = "true" ] || '
+            '[ "$memory_choice" != "$memory_seed_choice" ]; then',
+        }
+        unguarded = []
+        for index, line in enumerate(lines):
+            if line.strip() != 'PARAM_MEMORY_EXPLICIT="true"':
+                continue
+            preceding = next(
+                (
+                    lines[back].strip()
+                    for back in range(index - 1, -1, -1)
+                    if lines[back].strip()
+                ),
+                "",
+            )
+            if preceding not in guards:
+                unguarded.append((index + 1, preceding))
+
+        self.assertEqual(
+            unguarded,
+            [],
+            "PARAM_MEMORY_EXPLICIT is set true under a condition this test does not "
+            "know. An answer counts as stated only when something stated it; "
+            "otherwise the generator's live Hindsight probe is skipped on the one "
+            "path it was added for",
+        )
+
+        # And the seed is taken before the menu renders, or the comparison
+        # above compares the answer against itself and is always false.
+        source = "\n".join(lines)
+        self.assertIn('local memory_seed_choice="$memory_choice"', source)
+        self.assertLess(
+            source.index('local memory_seed_choice="$memory_choice"'),
+            source.index(
+                'prompt_menu "Should the agent remember things between conversations?"'
+            ),
         )
 
     def test_the_dashboard_inherits_through_its_recorded_spelling_too(self):
