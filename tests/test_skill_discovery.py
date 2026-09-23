@@ -74,6 +74,7 @@ this suite is their only reader inside the repository.
 import os
 import pathlib
 import re
+import tempfile
 import unittest
 
 import yaml
@@ -134,11 +135,55 @@ def _description(skill_md):
     `SkillFrontmatterTest` only by accident of naming: without it, a skill
     whose frontmatter does not parse is first reported as a description
     opening with the wrong word, which points the reader at the wrong line.
+
+    `or ""` rather than a default, because a present key holding nothing is
+    not a missing key. `description:` with nothing after it -- or its `~` and
+    `null` spellings, the shape a skill carries while someone is still
+    drafting it -- puts `None` in the mapping, so `get(…, "")` returns `None`
+    and `str(None)` is the four truthy characters `None`. The skill then has
+    no description and passes the check that exists to say so.
     """
     block, why = _frontmatter(skill_md)
     if block is None:
         return "", why
-    return str(block.get("description", "")), ""
+    return str(block.get("description") or ""), ""
+
+
+class DescriptionReadingTest(unittest.TestCase):
+    """The reader the guards are only as good as.
+
+    Every assertion below this class asks `_description` what a skill says,
+    so a shape it mis-reads is a shape they all wave through. `description:`
+    holding nothing did exactly that: it arrived as the string `None`, which
+    is truthy, and `test_every_skill_declares_a_description` passed on a
+    skill that has none.
+    """
+
+    def _description_of(self, frontmatter):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "SKILL.md"
+            path.write_text(f"---\n{frontmatter}---\n\n# body\n", encoding="utf-8")
+            return _description(path)[0]
+
+    def test_a_description_with_no_value_reads_as_absent(self):
+        # The three spellings YAML gives a null, all of which a half-written
+        # skill carries and none of which is a description.
+        for frontmatter in (
+            "name: draft\ndescription:\n",
+            "name: draft\ndescription: ~\n",
+            "name: draft\ndescription: null\n",
+        ):
+            with self.subTest(frontmatter=frontmatter):
+                self.assertEqual(self._description_of(frontmatter), "")
+
+    def test_a_missing_description_key_reads_as_absent(self):
+        self.assertEqual(self._description_of("name: draft\n"), "")
+
+    def test_a_real_description_is_returned_unchanged(self):
+        self.assertEqual(
+            self._description_of("name: draft\ndescription: Installs things.\n"),
+            "Installs things.",
+        )
 
 
 class ClaudeSkillLinksTest(unittest.TestCase):
