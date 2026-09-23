@@ -343,18 +343,16 @@ class UpgradeRunContractTest(unittest.TestCase):
                         "would leave the adopted checkout detached",
                     )
 
-    def test_tfvars_generation_is_snapshotted_and_scoped_to_terraform_modes(self):
-        """write_tfvars_from_state runs before full's KMS/SA refusals, so main() must snapshot first and skip non-Terraform modes."""
+    def test_tfvars_generation_is_snapshotted_before_writing(self):
+        """write_tfvars_from_state runs before full's and harness's refusals, so main() must snapshot first while still regenerating tfvars across all modes so the next full apply agrees with the release."""
         source = _UPGRADE_SH.read_text()
-        guard = 'if [ "$PARAM_UPGRADE_MODE" = "full" ] || [ "$PARAM_PLAN" = "true" ]; then'
         snap = 'snapshot_moved_checkout_tfvars "${repo_dir}/terraform/examples/full-install/terraform.tfvars"'
         write = 'write_tfvars_from_state "${repo_dir}/terraform/examples/full-install/terraform.tfvars" "$PARAM_IMAGE_TAG"'
-        self.assertIn(guard, source)
-        guard_at = source.index(guard)
-        block = source[guard_at : source.index("\n  fi\n", guard_at)]
-        self.assertIn(snap, block)
-        self.assertIn(write, block)
-        self.assertLess(block.index(snap), block.index(write))
+        dispatch = 'case "$PARAM_UPGRADE_MODE" in'
+        self.assertIn(snap, source)
+        self.assertIn(write, source)
+        self.assertLess(source.index(snap), source.index(write))
+        self.assertLess(source.index(write), source.index(dispatch, source.index(write)))
 
 
 class DirtyCheckoutRefusalTest(unittest.TestCase):
@@ -1131,6 +1129,36 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertIn(f"but {upstream_url} names {commits['0.3.0']}", combined)
         self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
 
+    def test_an_unreachable_remote_refuses_an_adopted_checkouts_tag(self):
+        """When KUBE_AGENTS_REPO_URL cannot be reached, a real upgrade refuses an adopted tag."""
+        home_dir, clone_dir, _, _ = self._existing_clone_fixture("0.2.0")
+        self._forge_local_tag(clone_dir, "0.3.0")
+        missing_remote = str(home_dir.parent / "does-not-exist.git")
+
+        proc = self._acquire_from_outside(home_dir, missing_remote, "0.3.0")
+
+        self.assertNotEqual(proc.returncode, 0)
+        combined = proc.stdout + proc.stderr
+        self.assertIn(f"Could not ask {missing_remote} what '0.3.0' names", combined)
+        self.assertIn("cannot be confirmed as the release", combined)
+        self.assertNotIn("Verified upgrade scripts and image ref", combined)
+
+    def test_a_preview_with_an_unreachable_remote_warns_and_trusts_the_local_tag(self):
+        """A preview is the command an operator runs when the network is down, so it warns and goes on."""
+        home_dir, clone_dir, _, _ = self._existing_clone_fixture("0.2.0")
+        self._forge_local_tag(clone_dir, "0.3.0")
+        missing_remote = str(home_dir.parent / "does-not-exist.git")
+
+        proc = self._acquire_from_outside(
+            home_dir, missing_remote, "0.3.0", preview_flag="PARAM_PLAN"
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        combined = proc.stdout + proc.stderr
+        self.assertIn(f"Could not ask {missing_remote} what '0.3.0' names", combined)
+        self.assertIn(f"so this preview is trusting the tag in {clone_dir}", combined)
+        self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+
     def _acquire_then_exit(
         self, home_dir, upstream_url, requested_ref, exit_code, apply_started=False, between=""
     ):
@@ -1790,6 +1818,36 @@ exit {exit_code}
         self.assertIn("was written for another install", combined)
         self.assertIn("--gke-cluster-name=install-b, but CLUSTER_NAME=install-a", combined)
         self.assertIn("Dry-Run Upgrade Plan Preview", combined)
+
+    def test_a_plan_refuses_when_the_configuration_belongs_to_another_install(self):
+        """Unlike --dry-run, --plan renders terraform.tfvars and runs lifecycle.sh plan.
+
+        When the checkout in $HOME/kube-agents is already at the target ref,
+        acquire_upgrade_sources adopts it for --plan too; letting --plan proceed
+        over a coordinate conflict would rewrite install A's terraform.tfvars
+        and .terraform/ backend for cluster B while diffing B's state against
+        A's configuration.
+        """
+        home_dir, clone_dir, upstream_url, _ = self._fixture_configured_for("install-a")
+        tfvars = clone_dir / "terraform" / "examples" / "full-install" / "terraform.tfvars"
+        tfvars.parent.mkdir(parents=True, exist_ok=True)
+        tfvars.write_text('cluster_name = "install-a"\n')
+
+        proc = self._whole_run_through_a_real_pipe(
+            home_dir,
+            upstream_url,
+            [
+                "--image-tag=0.2.0",
+                "--plan",
+                "--non-interactive",
+                "--gke-cluster-name=install-b",
+            ],
+        )
+
+        combined = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 1, combined)
+        self.assertIn("records a different install than the flags name", combined)
+        self.assertEqual(tfvars.read_text(), 'cluster_name = "install-a"\n')
 
     def test_a_flag_that_agrees_with_the_configuration_is_not_a_conflict(self):
         """The ordinary case: the documented one-liner names its own install.

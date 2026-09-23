@@ -1250,7 +1250,12 @@ main() {
     coordinate_conflicts="${coordinate_conflicts}    --gcp-region=${PARAM_REGION}, but REGION=${REGION}"$'\n'
   fi
   if [ -n "$coordinate_conflicts" ]; then
-    if [ "$PARAM_DRY_RUN" = "true" ] || [ "$PARAM_PLAN" = "true" ]; then
+    # Only --dry-run warns and goes on: it exits immediately below without
+    # touching the checkout. --plan would go on to write terraform.tfvars and
+    # run lifecycle.sh plan (which reconfigures .terraform/ in repo_dir),
+    # diffing one install's configuration against another's state while
+    # rewriting the first install's checkout.
+    if [ "$PARAM_DRY_RUN" = "true" ]; then
       print_warning "${install_env_file} was written for another install, and this preview reads it anyway:"
       printf '%s' "$coordinate_conflicts" >&2
     else
@@ -1420,18 +1425,15 @@ main() {
       print_warning "Helm release '${KUBE_AGENTS_HELM_RELEASE}' is currently in '${current_helm_status}'. Note: rollback is skipped in plan mode."
     fi
   fi
-  # Only full and --plan run Terraform; operator and harness re-tag the
-  # installed Helm release directly and never read terraform.tfvars, so
-  # rendering one for them would leave the target release's tfvars in the
-  # checkout when only the operator or harness moved (or when harness_retag_keys
-  # refuses before UPGRADE_APPLY_STARTED).
-  if [ "$PARAM_UPGRADE_MODE" = "full" ] || [ "$PARAM_PLAN" = "true" ]; then
-    snapshot_moved_checkout_tfvars "${repo_dir}/terraform/examples/full-install/terraform.tfvars"
-    # NAMESPACE steers the generator's Secret-recovery reads (install.env omits
-    # credentials when PERSIST_SECRETS_ON_DISK=false; the live Secret has them).
-    NAMESPACE="$target_namespace" \
-      write_tfvars_from_state "${repo_dir}/terraform/examples/full-install/terraform.tfvars" "$PARAM_IMAGE_TAG"
-  fi
+  # Snapshot any pre-existing terraform.tfvars in an adopted checkout before
+  # write_tfvars_from_state overwrites it: if full or harness later refuses
+  # before UPGRADE_APPLY_STARTED, restore_moved_checkout puts the previous
+  # tfvars back (or removes the newly created one) alongside the previous commit.
+  snapshot_moved_checkout_tfvars "${repo_dir}/terraform/examples/full-install/terraform.tfvars"
+  # NAMESPACE steers the generator's Secret-recovery reads (install.env omits
+  # credentials when PERSIST_SECRETS_ON_DISK=false; the live Secret has them).
+  NAMESPACE="$target_namespace" \
+    write_tfvars_from_state "${repo_dir}/terraform/examples/full-install/terraform.tfvars" "$PARAM_IMAGE_TAG"
 
   if [ "$PARAM_PLAN" = "true" ]; then
     print_step "4. Planning (read-only)"

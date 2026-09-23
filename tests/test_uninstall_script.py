@@ -377,8 +377,13 @@ class SourceRefDispatchTest(unittest.TestCase):
                 },
                 bin_dir=str(bin_dir),
             )
+            # Copy uninstall.sh out of the repository root so script_dir has no
+            # terraform/examples/full-install/lifecycle.sh and cannot pick up a
+            # gitignored install.env from the developer's own checkout.
+            script_copy = pathlib.Path(tmp) / "uninstall.sh"
+            shutil.copy(_UNINSTALL_SH, script_copy)
             proc = subprocess.run(
-                ["bash", str(_UNINSTALL_SH), *args],
+                ["bash", str(script_copy), *args],
                 capture_output=True,
                 text=True,
                 env=full_env,
