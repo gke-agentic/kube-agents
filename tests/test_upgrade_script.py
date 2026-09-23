@@ -160,6 +160,57 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
             self.assertIn("it is release '0.5.0', not '0.6.0'", proc.stdout)
             self.assertNotIn("Verified", proc.stdout)
 
+    def test_verify_local_source_ref_rejects_a_tree_whose_own_upgrade_sh_was_replaced(self):
+        """The stamp cannot be read from the file the operator just downloaded.
+
+        `curl -o upgrade.sh …/0.6.0/upgrade.sh && ./upgrade.sh` inside an
+        unpacked 0.5.0 tree overwrites the one root script the marker-less
+        fallback used to consult, so the tree reported 0.6.0 and its 0.5.0
+        Terraform, charts and CRDs were applied at the 0.6.0 tag. The packager
+        stamps install.sh and uninstall.sh with the same version and neither is
+        in the way of that download, so they answer for the tree.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="overwritten-upgrade-") as outer_dir:
+            archive_dir = pathlib.Path(outer_dir) / "kube-agents-0.5.0"
+            archive_dir.mkdir(parents=True)
+            for sibling in ("install.sh", "uninstall.sh"):
+                (archive_dir / sibling).write_text(
+                    '#!/usr/bin/env bash\nBAKED_RELEASE_VERSION="0.5.0"\n'
+                )
+            # What the download left behind: the tree's upgrade.sh now names the
+            # release the operator asked for, not the release the tree is.
+            (archive_dir / "upgrade.sh").write_text(
+                '#!/usr/bin/env bash\nBAKED_RELEASE_VERSION="0.6.0"\n'
+            )
+
+            cmd = f'BAKED_RELEASE_VERSION="0.6.0"; verify_local_source_ref "{archive_dir}" "0.6.0"'
+            proc = self._run_upgrade_func(cmd, cwd=archive_dir)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("it is release '0.5.0', not '0.6.0'", proc.stdout)
+            self.assertNotIn("Verified", proc.stdout)
+
+    def test_release_version_of_source_tree_skips_an_unstamped_sibling(self):
+        """An empty BAKED_RELEASE_VERSION is the plain repository content, not
+        an answer, so the search keeps going rather than stopping at it."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="partly-stamped-tree-") as outer_dir:
+            archive_dir = pathlib.Path(outer_dir) / "kube-agents-0.5.0"
+            archive_dir.mkdir(parents=True)
+            (archive_dir / "install.sh").write_text(
+                '#!/usr/bin/env bash\nBAKED_RELEASE_VERSION=""\n'
+            )
+            (archive_dir / "uninstall.sh").write_text(
+                '#!/usr/bin/env bash\nBAKED_RELEASE_VERSION="0.5.0"\n'
+            )
+
+            cmd = f'release_version_of_source_tree "{archive_dir}"'
+            proc = self._run_upgrade_func(cmd, cwd=archive_dir)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout.strip(), "0.5.0")
+
     def test_verify_local_source_ref_accepts_a_marker_that_names_only_the_tag(self):
         """deploy/release-versioning.md promises a match on version *or* tag.
 
@@ -2229,6 +2280,95 @@ class PipedUpgradeResolvesItsSourcesTest(unittest.TestCase):
         self.assertNotIn("unbound variable", combined)
         self.assertNotIn("Required CLI tool", combined)
         self.assertIn("have to run from a kube-agents checkout", combined)
+
+
+class ExplicitInstallEnvPointerTest(unittest.TestCase):
+    """An explicit KUBE_AGENTS_INSTALL_ENV naming a file that is not there.
+
+    The lookup order used to hand the nonexistent path to load_install_env,
+    which returned 1 silently, and the run ended at "No install configuration
+    (install.env) was found in <a directory the operator never chose>" — with
+    "point KUBE_AGENTS_INSTALL_ENV at one" as the advice, which is what they
+    had just done. On a piped run it was worse: the pointer also makes
+    checkout_owns_run_config reject $HOME/kube-agents, so the run first cloned
+    the engine into /tmp and then blamed that temporary directory.
+    """
+
+    def _run_piped(self, install_env, cwd, home=None, image_tag_args=("--keep-image-tag",)):
+        stub_bin = pathlib.Path(cwd) / "bin"
+        stub_bin.mkdir(exist_ok=True)
+        # The tool gate sits after the refusal under test, but a host missing
+        # one of these would still reach it if the refusal ever moved, and the
+        # assertions below would then read a message about the wrong thing.
+        for tool in ("gcloud", "kubectl", "helm", "jq", "terraform", "git"):
+            stub = stub_bin / tool
+            stub.write_text("#!/usr/bin/env bash\necho \"STUB $0 $*\"\nexit 0\n")
+            stub.chmod(0o755)
+        overrides = {"KUBE_AGENTS_INSTALL_ENV": str(install_env)}
+        if home is not None:
+            overrides["HOME"] = str(home)
+        return subprocess.run(
+            ["bash", "-s", "--", *image_tag_args, "--non-interactive"],
+            input=_UPGRADE_SH.read_text(),
+            capture_output=True,
+            text=True,
+            env=get_isolated_test_env(overrides=overrides, bin_dir=str(stub_bin)),
+            cwd=str(cwd),
+        )
+
+    def test_a_pointer_at_a_missing_file_is_refused_by_the_name_the_operator_gave(self):
+        with tempfile.TemporaryDirectory(prefix="mistyped-pointer-") as outside:
+            missing = pathlib.Path(outside) / "kube-agnets" / "install.env"
+            proc = self._run_piped(missing, outside)
+
+        combined = proc.stdout + proc.stderr
+        self.assertNotEqual(proc.returncode, 0, combined)
+        self.assertIn(str(missing), combined)
+        self.assertIn("which does not exist", combined)
+        # Not the message that blames a directory nobody named.
+        self.assertNotIn("No install configuration (install.env) was found", combined)
+
+    def test_the_refusal_comes_before_the_run_fetches_anything(self):
+        """Placement matters: the same pointer makes checkout_owns_run_config
+        reject the install checkout, so a refusal after source acquisition
+        would clone the engine from GitHub first and then name /tmp.
+
+        A concrete --image-tag rather than --keep-image-tag, because a piped
+        run without a tag has no ref to fetch the engine at and dies inside
+        acquire_upgrade_sources before reaching the clone — which would make
+        these assertions hold whether the refusal is placed correctly or not.
+        """
+        with tempfile.TemporaryDirectory(prefix="mistyped-pointer-clone-") as outside:
+            home = pathlib.Path(outside) / "home"
+            home.mkdir()
+            missing = home / "kube-agnets" / "install.env"
+            proc = self._run_piped(
+                missing,
+                outside,
+                home=home,
+                image_tag_args=(f"--image-tag={'a' * 40}",),
+            )
+
+        combined = proc.stdout + proc.stderr
+        self.assertNotEqual(proc.returncode, 0, combined)
+        self.assertNotIn("STUB", combined, "no tool should have run before the refusal")
+        self.assertNotIn("Fetching", combined)
+
+    def test_the_comment_on_the_string_compare_fallback_names_where_the_refusal_is(self):
+        """The fallback's comment claimed resolve_install_env_file refuses a
+        nonexistent pointer. It never did; main() does, and the comment has to
+        say so or the next reader removes the check as redundant."""
+        source = _UPGRADE_SH.read_text()
+        refusal = 'print_error "KUBE_AGENTS_INSTALL_ENV names'
+        self.assertIn(refusal, source)
+        self.assertLess(
+            source.index(refusal),
+            source.index("acquire_upgrade_sources repo_dir install_checkout"),
+        )
+        self.assertNotIn(
+            "resolve_install_env_file refuses on its own",
+            source,
+        )
 
 
 if __name__ == "__main__":

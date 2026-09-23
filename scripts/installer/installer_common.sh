@@ -31,6 +31,32 @@
 # path nobody knows in advance.
 _installer_common_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
 INSTALL_DEFAULTS_FILE="${KUBE_AGENTS_INSTALL_DEFAULTS:-${_installer_common_dir}/../../install.defaults.env}"
+# gke_dns_endpoint_flag, for the credentials fetch write_tfvars_from_state makes
+# against a cluster that already exists. Without it the fetch fails on a
+# DNS-endpoint-only cluster (no routable IP endpoint), the context gate below
+# does not match, and every check that gate protects -- credential recovery and
+# the live Hindsight probe -- is skipped or, since the probe learned to say so,
+# turned into a refusal, against a cluster `terraform apply` itself reaches fine
+# through the provider's DNS endpoint. install.sh and common.sh source the same
+# helper for their own fetches; re-sourcing only redefines the function and
+# re-initialises its memo, and every one of those happens before anything has
+# probed.
+#
+# A tree without the helper gets a stub rather than a refusal -- the empty flag
+# is the command that ran before the helper existed, and it still reaches every
+# cluster with a routable IP endpoint -- but it says so. Falling back in silence
+# means the next thing the operator sees is an unrelated-looking failure against
+# a cluster they cannot route to.
+if [ -r "${_installer_common_dir}/gke_dns_endpoint.sh" ]; then
+  # shellcheck source=scripts/installer/gke_dns_endpoint.sh
+  # shellcheck disable=SC1091
+  . "${_installer_common_dir}/gke_dns_endpoint.sh"
+fi
+if ! declare -f gke_dns_endpoint_flag >/dev/null 2>&1; then
+  echo "  ⚠ Cannot find ${_installer_common_dir}/gke_dns_endpoint.sh; reaching clusters over their IP endpoint." >&2
+  gke_dns_endpoint_flag() { GKE_DNS_ENDPOINT_FLAG=""; }
+fi
+
 unset _installer_common_dir
 if [ -r "$INSTALL_DEFAULTS_FILE" ]; then
   # shellcheck source=/dev/null
@@ -1323,6 +1349,100 @@ ensure_clean_helm_release() {
 # could touch another cluster checks the current context against it first.
 gke_context_name() { printf 'gke_%s_%s_%s' "$PROJECT_ID" "$REGION" "$CLUSTER_NAME"; }
 
+# Whether this install's cluster is running the Hindsight memory store.
+#
+# Sets LIVE_HINDSIGHT_STATE to one of:
+#   present  -- one of the two objects is there, so the store is deployed
+#   absent   -- the API server answered NotFound for BOTH, so it is not
+#   unknown  -- nobody could be asked, and LIVE_HINDSIGHT_REASON says why
+#
+# The third answer is the point. `kubectl get … || true` collapses a timeout, a
+# 403, a missing auth plugin and a stale context into the same verdict as a
+# genuine NotFound -- and the caller turns that verdict into
+# `memory_provider = "multiuser_memory"`, which plans the destruction of the
+# hindsight-api Deployment and the hindsight-postgresql StatefulSet holding the
+# database. The cluster-existence probe in write_tfvars_from_state already
+# refuses to guess for exactly this reason ("a wrong guess can plan a live
+# cluster's replacement"); this probe decides the same kind of question and
+# answers it the same way.
+#
+# Assigns rather than echoes, as gke_dns_endpoint_flag and
+# recorded_plugin_image_tag_keys do: the reason has to reach the caller
+# alongside the verdict, and a command substitution would run this in a
+# subshell that discards it.
+LIVE_HINDSIGHT_STATE=""
+LIVE_HINDSIGHT_REASON=""
+live_hindsight_state() {
+  local namespace="${1:-${NAMESPACE:-$DEFAULT_NAMESPACE}}"
+  LIVE_HINDSIGHT_STATE="unknown"
+  LIVE_HINDSIGHT_REASON=""
+
+  if ! command -v kubectl >/dev/null 2>&1; then
+    LIVE_HINDSIGHT_REASON="kubectl is not installed"
+    return 0
+  fi
+  # The same context gate the credential recovery uses. A stale context would
+  # answer about somebody else's cluster, and "Hindsight is not deployed over
+  # there" is not an answer about this install.
+  local expected_ctx current_ctx
+  expected_ctx="$(gke_context_name)"
+  current_ctx="$(kubectl config current-context 2>/dev/null || true)"
+  if [ "$current_ctx" != "$expected_ctx" ]; then
+    LIVE_HINDSIGHT_REASON="kubectl's current context is '${current_ctx:-none}', not this cluster's ('${expected_ctx}')"
+    return 0
+  fi
+
+  # Either object proves the store is there; it takes a definite "no" on both to
+  # prove it is not. `${spec%% *}` / `${spec#* }` rather than `set --`, which
+  # would clobber this function's own positional parameters.
+  local spec kind name out rc absent=0
+  for spec in "statefulset hindsight-postgresql" "deployment hindsight-api"; do
+    kind="${spec%% *}"
+    name="${spec#* }"
+    rc=0
+    # --ignore-not-found is what makes the answer readable without guessing at
+    # prose: the API server having answered "no such object" becomes exit 0 with
+    # no output, which nothing else produces. Scoring absence by grepping stderr
+    # for "not found" instead is what this function was written to avoid and
+    # still got wrong once: kubectl reports a missing exec-credential plugin as
+    # `exec: executable gke-gcloud-auth-plugin not found`, which matched, and a
+    # host that cannot authenticate to the cluster at all was read as a cluster
+    # with no Hindsight on it -- silently, in the arm that takes the default.
+    #
+    # stdout and stderr are merged because only one of them can matter per
+    # outcome, and the present/absent split is decided by looking for the
+    # object's own name in `-o name` output rather than by the string being
+    # non-empty, so a server-sent `Warning:` line cannot read as an object.
+    #
+    # `trap - ERR` inside the substitution for the bash 3.2 reason the probes
+    # above give -- a non-zero exit here is the tested condition, not an abort.
+    out="$({ trap - ERR; kubectl get "$kind" "$name" -n "$namespace" \
+      --request-timeout=10s --ignore-not-found -o name; } 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      if printf '%s\n' "$out" | grep -qE "(^|/)${name}\$"; then
+        LIVE_HINDSIGHT_STATE="present"
+        return 0
+      fi
+      absent=$((absent + 1))
+      continue
+    fi
+    # The API server's own phrasing, and only that. It is the one NotFound this
+    # function is entitled to believe -- it can only come from a server that
+    # answered -- and it still arrives on older kubectl builds, and for a
+    # namespace that does not exist, where --ignore-not-found does not apply.
+    if printf '%s' "$out" | grep -qF 'Error from server (NotFound)'; then
+      absent=$((absent + 1))
+      continue
+    fi
+    LIVE_HINDSIGHT_REASON="kubectl could not read ${kind}/${name} in namespace '${namespace}': ${out:-unknown kubectl failure}"
+    return 0
+  done
+  if [ "$absent" -eq 2 ]; then
+    LIVE_HINDSIGHT_STATE="absent"
+  fi
+  return 0
+}
+
 # Clears the one Helm leftover a first apply's failure leaves that no retry
 # can get past: the kube-agents release in `failed`, with no revision that
 # ever served, and absent from Terraform state because the provider never
@@ -1533,11 +1653,20 @@ write_tfvars_from_state() {
 
   # Installing onto a cluster that already exists (whether adopted or managed
   # by this install's Terraform state): fetch its credentials now, before the
-  # recovery loop below — recovery and the live Hindsight check are gated on
-  # the kubectl context actually being this cluster.
+  # recovery loop below — recovery and the live Hindsight probe are both gated
+  # on the kubectl context actually being this cluster.
+  #
+  # Through gke_dns_endpoint_flag, for the reason install.sh gives at its own
+  # later fetch: on a DNS-endpoint-only cluster a fetch without the flag fails,
+  # the context gate misses, and both checks are skipped against a cluster the
+  # apply itself reaches fine through the provider's DNS endpoint.
   if [ "$cluster_exists" = "true" ] && command -v kubectl >/dev/null 2>&1; then
+    GKE_DNS_ENDPOINT_FLAG=""
+    gke_dns_endpoint_flag "${CLUSTER_NAME}" "${REGION}" "${PROJECT_ID}" || true
+    # Unquoted on purpose: empty must contribute no argument at all.
+    # shellcheck disable=SC2086
     gcloud container clusters get-credentials "${CLUSTER_NAME}" --location "${REGION}" \
-      --project "${PROJECT_ID}" >/dev/null 2>&1 || true
+      --project "${PROJECT_ID}" $GKE_DNS_ENDPOINT_FLAG >/dev/null 2>&1 || true
   fi
 
   # install.env does not always carry the credentials: PERSIST_SECRETS_ON_DISK=false
@@ -1575,21 +1704,54 @@ write_tfvars_from_state() {
         print_info "Recovered ${secret_key} from the live '${PLATFORM_AGENT_SECRET}' Secret (install.env does not persist it)."
       fi
     done
+  fi
 
-    # Preserve a live Hindsight deployment when the caller did not explicitly
-    # select a memory mode (for example, a non-interactive re-install without
-    # install.env or --memory, or an install.env missing the MEMORY line).
-    # Defaulting to multiuser_memory against a cluster that already runs
-    # Hindsight would plan the destruction of the hindsight-api Deployment and
-    # hindsight-postgresql StatefulSet.
-    if [ "$cluster_exists" = "true" ] && [ "$memory_provider_explicit" = "false" ]; then
-      if (trap - ERR; kubectl get statefulset hindsight-postgresql -n "${NAMESPACE:-$DEFAULT_NAMESPACE}" --request-timeout=10s >/dev/null 2>&1) ||
-        (trap - ERR; kubectl get deployment hindsight-api -n "${NAMESPACE:-$DEFAULT_NAMESPACE}" --request-timeout=10s >/dev/null 2>&1); then
+  # MEMORY is the one key whose absence from install.env costs DATA rather than
+  # re-creatable infrastructure. Every other key the generator defaults --
+  # ENABLE_GVISOR, ENABLE_GKE_BACKUP_PLAN, ENABLE_STOCKOUT_INVESTIGATOR and the
+  # rest -- names something Terraform can build again; this one names the
+  # hindsight-postgresql StatefulSet and the volume holding the database. So it
+  # is the one the generator goes and asks the cluster about when nobody told
+  # it, rather than taking the project default.
+  #
+  # Outside the context gate above, because the probe does its own: it has to
+  # be able to report "I could not ask", and a block that is skipped reports
+  # nothing at all.
+  if [ "$cluster_exists" = "true" ] && [ "$memory_provider_explicit" = "false" ]; then
+    live_hindsight_state "${NAMESPACE:-$DEFAULT_NAMESPACE}"
+    case "$LIVE_HINDSIGHT_STATE" in
+      present)
         memory_provider="kube_agents_memory"
         export MEMORY_PROVIDER="kube_agents_memory"
-        print_info "Preserving live Hindsight deployment (memory_provider = \"kube_agents_memory\"); pass --memory=file or --memory=off to replace it."
-      fi
-    fi
+        print_info "This cluster runs the Hindsight memory store and no memory mode was given, so it is preserved (memory_provider = \"kube_agents_memory\"). Pass --memory=file or --memory=off, or record MEMORY in install.env, to replace it."
+        ;;
+      absent)
+        # The API server answered, and answered NotFound for both objects. The
+        # project default stands, and it plans nothing away.
+        :
+        ;;
+      *)
+        # Could not ask. Refuse for the callers that APPLY, because continuing
+        # writes multiuser_memory into terraform.tfvars and the apply then
+        # deletes a database this run never managed to look at. uninstall.sh
+        # does not opt in: a destroy removes the store either way, and an
+        # install has to keep a working way to remove itself.
+        if is_truthy "${KUBE_AGENTS_REQUIRE_MEMORY_ANSWER:-false}"; then
+          print_error "Cannot tell whether this cluster runs the Hindsight memory store, and no memory mode was given: ${LIVE_HINDSIGHT_REASON:-the cluster could not be reached}."
+          print_info "Continuing would generate memory_provider = \"${DEFAULT_MEMORY_PROVIDER}\" and the apply would delete hindsight-api and hindsight-postgresql, including its database."
+          # Named per caller, as the Autopilot floor refusal below is and for
+          # the same reason: upgrade.sh's parse_args has no --memory and answers
+          # "Unknown parameter: --memory=file" with exit 2, so sending every
+          # caller to the flag sends half of them to a second, worse error.
+          # Recording MEMORY works everywhere and is named first for that
+          # reason; MEMORY=… in the environment is the single-run form.
+          print_info "State the answer instead: record MEMORY=hindsight|file|off in the install's install.env (install.sh also takes --memory=, and MEMORY=… in the environment answers for one run). Or restore access to the cluster (gcloud container clusters get-credentials ${CLUSTER_NAME} --location ${REGION} --project ${PROJECT_ID}) and re-run."
+          return 1
+        fi
+
+        print_warning "Could not tell whether this cluster runs the Hindsight memory store (${LIVE_HINDSIGHT_REASON:-the cluster could not be reached}); generating memory_provider = \"${memory_provider}\"."
+        ;;
+    esac
   fi
 
   # Minting the key happens HERE, after the recovery loop above, and only for a

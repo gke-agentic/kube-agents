@@ -2172,6 +2172,106 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
         self.assertIn("M=off", proc.stdout)
 
+    # ── whether anybody actually stated a memory mode ───────────────────────
+    #
+    # install.sh's half of the Hindsight guard. The generator's live probe only
+    # fires when install.sh hands it an empty MEMORY_PROVIDER, and it does that
+    # only while PARAM_MEMORY_EXPLICIT is false. A change that sets the flag
+    # unconditionally, or that restores the old unconditional
+    # memory_provider_from_mode / DEFAULT_MEMORY_PROVIDER fallback ahead of the
+    # generator, makes the probe dead code for the front door the guard is
+    # about — and every other test in this file stays green.
+
+    def test_a_configuration_with_no_memory_line_states_no_memory_mode(self):
+        """The run the guard exists for: --non-interactive with an install.env
+        that never mentions memory (or one copied from the example, where the
+        MEMORY line is commented out)."""
+        proc = self._params(
+            "PROJECT_ID=p\n", 'echo "M=[$PARAM_MEMORY] E=$PARAM_MEMORY_EXPLICIT"'
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("M=[] E=false", proc.stdout)
+
+    def test_either_recorded_spelling_states_a_memory_mode(self):
+        for contents in ("MEMORY=file\n", "MEMORY_PROVIDER=kube_agents_memory\n"):
+            with self.subTest(contents=contents.strip()):
+                proc = self._params(contents, 'echo "E=$PARAM_MEMORY_EXPLICIT"')
+                self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+                self.assertIn("E=true", proc.stdout)
+
+    def test_the_memory_flag_states_a_memory_mode(self):
+        """--memory= wins over a file that says nothing, and has to mark the
+        answer as given: an operator who typed it must not have the cluster
+        consulted behind their back."""
+        proc = self._params(
+            "PROJECT_ID=p\n",
+            'parse_args --memory=file; echo "M=$PARAM_MEMORY E=$PARAM_MEMORY_EXPLICIT"',
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("M=file E=true", proc.stdout)
+
+    def test_nothing_is_chosen_ahead_of_the_generator_when_no_mode_was_stated(self):
+        """The gate that leaves MEMORY_PROVIDER empty for the generator.
+
+        Pinned against the source because the block sits deep inside main(),
+        after the whole interview. What matters is that the assignment is
+        conditional on PARAM_MEMORY_EXPLICIT and that the generator is told to
+        refuse rather than default when it cannot ask the cluster.
+        """
+        source = _INSTALL_SH.read_text()
+        gate = '  if [ "$PARAM_MEMORY_EXPLICIT" = "true" ]; then\n' \
+               '    memory_provider="$(memory_provider_from_mode "$memory_mode")"\n'
+        self.assertIn(gate, source)
+        self.assertIn("KUBE_AGENTS_REQUIRE_MEMORY_ANSWER=true \\\n", source)
+        # And the answer the generator reaches is read back, so the summary and
+        # the recorded install.env agree with the tfvars.
+        self.assertIn('    memory_provider="${MEMORY_PROVIDER:-$DEFAULT_MEMORY_PROVIDER}"', source)
+
+    def test_every_generator_call_that_is_followed_by_an_apply_asks_for_an_answer(self):
+        """One call site carrying the opt-in is not the property that matters.
+
+        The assertion above is a substring, so a second call site added without
+        `KUBE_AGENTS_REQUIRE_MEMORY_ANSWER` keeps it green while walking
+        straight into the default the guard exists to prevent — which is what
+        happened to the Day-2 "Save & Apply" panel, whose next statement is a
+        full `terraform apply`. So enumerate the call sites instead.
+
+        `settle_network_policy_acceptance` is the one exemption, and it is not
+        a hole: it re-renders after main()'s guarded call has already exported
+        a settled `MEMORY_PROVIDER`, so the generator takes the explicit branch
+        and never reaches the probe.
+        """
+        lines = _INSTALL_SH.read_text().splitlines()
+        unguarded = []
+        for index, line in enumerate(lines):
+            if not line.strip().startswith("write_tfvars_from_state "):
+                continue
+            # Collect the `VAR=value \` continuation lines the call hangs off.
+            prefix, back = [], index - 1
+            while back >= 0 and lines[back].rstrip().endswith("\\"):
+                prefix.append(lines[back])
+                back -= 1
+            if "KUBE_AGENTS_REQUIRE_MEMORY_ANSWER=true" in "\n".join(prefix):
+                continue
+            # Named by the function it sits in, not by a line number an edit
+            # anywhere above would move.
+            enclosing = next(
+                (
+                    lines[back][: lines[back].index("()")]
+                    for back in range(index, -1, -1)
+                    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*\(\) \{$", lines[back])
+                ),
+                f"<top level, line {index + 1}>",
+            )
+            unguarded.append(enclosing)
+
+        self.assertEqual(
+            unguarded,
+            ["settle_network_policy_acceptance"],
+            "a generator call site gained or lost the memory opt-in; if the new one "
+            "is followed by an apply it needs KUBE_AGENTS_REQUIRE_MEMORY_ANSWER=true",
+        )
+
     def test_the_dashboard_inherits_through_its_recorded_spelling_too(self):
         proc = self._params(
             "HERMES_DASHBOARD_ENABLED=true\n", 'echo "W=$PARAM_ENABLE_WEBUI"'

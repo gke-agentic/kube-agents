@@ -241,17 +241,26 @@ that set `NAMESPACE` in `install.env` uses that one. `platform-agent` is the cha
 
 ## When a rollback is refused
 
-The first two refusals happen before anything on the cluster moves. The other two land in the
-operator step after `N-1`'s CRDs are applied; Helm checks before it renders or applies anything,
-so the release itself keeps its last revision.
+The first two refusals happen before anything on the cluster moves, and the third before any of
+`N-1` is applied. The last two land in the operator step after `N-1`'s CRDs are applied; Helm
+checks before it renders or applies anything, so the release itself keeps its last revision.
 
 - **The sources do not match the tag.** The checkout's `HEAD` is not the tag's commit, the tree
   has uncommitted changes, or the bundle's baked version is not the `--image-tag` given. Start
   again from a clean checkout or bundle of `N-1`.
 - **No install configuration.** Neither `install.env` beside the script nor
-  `KUBE_AGENTS_INSTALL_ENV` was found. Supply the
+  `KUBE_AGENTS_INSTALL_ENV` was found — or `KUBE_AGENTS_INSTALL_ENV` names a file that is not
+  there, which is reported by that path rather than searched past. Supply the
   install's own file; a fresh one written from memory re-renders the `PlatformAgent` with whatever
   it forgets.
+- **The memory store cannot be checked and the configuration does not name one.** A rollback runs
+  `upgrade.sh`, and its `terraform.tfvars` is regenerated in every mode, so an `install.env` with
+  no `MEMORY` line makes the run ask the cluster whether it is running Hindsight rather than
+  default to a value that would plan the store away. If the cluster cannot be asked, the run stops.
+  This lands after `kubectl` has been pointed at the cluster and, on a real run, after the Secret
+  backfills, but before `N-1`'s CRDs are applied. Record `MEMORY=hindsight|file|off` in
+  `install.env`, or restore access to the cluster and re-run. See
+  [Upgrade](/kube-agents/install/upgrade/#when-an-upgrade-is-refused).
 - **`N-1`'s chart carries a values schema and `N` added a chart value.** Every release after
   `0.5.0` ships a `values.schema.json` that closes each level of the chart's values, and the
   re-tag reuses the values the release recorded, so a key `N`'s install set that `N-1`'s chart

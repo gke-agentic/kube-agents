@@ -347,6 +347,24 @@ main() {
   parse_args "$@"
   print_banner
 
+  # An explicit pointer at a file that is not there is a typo, and every arm
+  # below reads it: the --source-ref handover forwards the coordinates it holds
+  # to the pinned release, and the local arms regenerate terraform.tfvars from
+  # it. Continuing would fall back to DEFAULT_CLUSTER_NAME, DEFAULT_REGION and
+  # gcloud's active project -- on a GCE host, the machine's own project -- and
+  # aim a destroy at whatever that names.
+  #
+  # This is not the data-protection kind of check a teardown must never be
+  # blocked by (see the ENABLE_GVISOR note further down): unsetting the variable
+  # or fixing the path clears it, and a teardown with no pointer at all still
+  # runs on flags alone. install.sh's bootstrap_install_env and upgrade.sh
+  # refuse the same way, on the same INSTALL_ENV_EXPLICIT reasoning.
+  if [ -n "${KUBE_AGENTS_INSTALL_ENV:-}" ] && [ ! -f "${KUBE_AGENTS_INSTALL_ENV}" ]; then
+    print_error "KUBE_AGENTS_INSTALL_ENV names '${KUBE_AGENTS_INSTALL_ENV}', which does not exist."
+    print_info "Point it at the install's install.env, or unset it to search this checkout, the current directory, and the install checkout in \$HOME/kube-agents."
+    exit 1
+  fi
+
   print_step "1. Discovering Installed Infrastructure Elements"
 
   local script_dir repo_dir
@@ -386,6 +404,26 @@ main() {
       print_success "Loaded install configuration from: ${handoff_env_file}"
       check_uninstall_coordinate_conflicts "$handoff_env_file"
       export KUBE_AGENTS_INSTALL_ENV="$handoff_env_file"
+    else
+      # Silence here is what makes this arm dangerous. Nothing is forwarded, and
+      # the pinned release -- which for pre-0.4.0 refs does not read install.env
+      # at all -- falls straight back to DEFAULT_CLUSTER_NAME, DEFAULT_REGION and
+      # gcloud's active project, which on a GCE host is the machine's own. Same
+      # shape of warning as the local arms print, and a warning rather than a
+      # refusal because a teardown on flags alone is a supported way to run this
+      # (I4: an install has to keep a working way to remove itself).
+      local handoff_searched="${PWD}"
+      if [ -n "$wrapper_checkout" ]; then
+        handoff_searched="${wrapper_checkout} or ${handoff_searched}"
+      fi
+      if [ -n "${HOME:-}" ]; then
+        handoff_searched="${handoff_searched} or ${HOME}/kube-agents"
+      fi
+      print_warning "No install configuration (install.env) was found in ${handoff_searched}."
+      if [ -z "$PARAM_PROJECT_ID" ] && [ -z "$PARAM_CLUSTER_NAME" ] && [ -z "$PARAM_REGION" ]; then
+        print_warning "No coordinates are being forwarded either, so the '${PARAM_SOURCE_REF}' release will aim at its own defaults and gcloud's active project."
+        print_info "Pass --gcp-project-id/--gke-cluster-name/--gcp-region, or point KUBE_AGENTS_INSTALL_ENV at the install's install.env, to name the install you mean."
+      fi
     fi
 
     TEMP_REPO_DIR="$(mktemp -d)"

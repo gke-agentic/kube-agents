@@ -455,7 +455,16 @@ matches_release_bundle_ref() {
 # a stale tree arrives in. A bundle this repository packaged carries the marker.
 # A copy of one with the marker removed, or a tree from a release predating the
 # marker, still carries the version package_release_bundle.sh stamps into every
-# root script, so the tree's own upgrade.sh answers where the marker cannot.
+# root script, so the tree's own root scripts answer where the marker cannot.
+#
+# The order among those scripts matters, and upgrade.sh is deliberately last.
+# The way an operator runs a newer upgrader against an older unpacked tree is
+# `curl -o upgrade.sh …/<new>/upgrade.sh` inside it — which overwrites the one
+# file being consulted, so it would report the new version and the tree would
+# pass as matching while carrying the old release's Terraform, charts and CRDs.
+# The packager stamps install.sh and uninstall.sh with the same version, and
+# neither is in the way of that download, so they answer for the tree rather
+# than for the script that happens to be running.
 #
 # What this still cannot see: a tree that was never stamped at all -- GitHub's
 # auto-generated "Source code" archive of a tag is the plain repository content,
@@ -474,8 +483,18 @@ release_version_of_source_tree() {
       declared="$(grep -E "^tag=" "$marker" 2>/dev/null | cut -d'=' -f2- | tr -d '[:space:]' || echo "")"
     fi
   fi
-  if [ -z "$declared" ] && [ -f "${repo_dir}/upgrade.sh" ]; then
-    declared="$(grep -m1 -E '^BAKED_RELEASE_VERSION=' "${repo_dir}/upgrade.sh" 2>/dev/null | cut -d'=' -f2- | tr -d '"'"'"'[:space:]' || echo "")"
+  if [ -z "$declared" ]; then
+    local stamped_script
+    for stamped_script in install.sh uninstall.sh upgrade.sh; do
+      [ -f "${repo_dir}/${stamped_script}" ] || continue
+      declared="$(grep -m1 -E '^BAKED_RELEASE_VERSION=' "${repo_dir}/${stamped_script}" 2>/dev/null | cut -d'=' -f2- | tr -d '"'"'"'[:space:]' || echo "")"
+      # An empty stamp is the plain repository content, not an answer; keep
+      # asking, so a tree carrying one unstamped script and one stamped one
+      # still reports the release it came from.
+      if [ -n "$declared" ]; then
+        break
+      fi
+    done
   fi
   echo "$declared"
 }
@@ -932,8 +951,10 @@ checkout_owns_run_config() {
     # doubled slash, and a string compare would answer "no" and send a run that
     # is already reading that checkout's config off to a temporary clone. -ef
     # compares device and inode, so it answers for the file. The string compare
-    # is only the fallback for a path that does not exist, which
-    # resolve_install_env_file refuses on its own with a better message.
+    # is only a fallback for a path that does not exist, which main() refuses
+    # before this is ever reached (see the KUBE_AGENTS_INSTALL_ENV check next to
+    # the --dry-run/--plan conflict); it stays for the source-only callers that
+    # reach this function without going through main().
     if [ -e "$KUBE_AGENTS_INSTALL_ENV" ]; then
       [ "$KUBE_AGENTS_INSTALL_ENV" -ef "${candidate}/install.env" ]
     else
@@ -1139,6 +1160,23 @@ main() {
 
   if [ "$PARAM_DRY_RUN" = "true" ] && [ "$PARAM_PLAN" = "true" ]; then
     print_error "--dry-run and --plan are different previews and cannot be combined: --dry-run answers offline from configuration, --plan answers from the install's Terraform state."
+    exit 1
+  fi
+
+  # An explicit pointer at a file that is not there is a typo, not a lookup
+  # order to fall through. Naming it here is the parity install.sh already has
+  # in bootstrap_install_env; without it the run ends at "No install
+  # configuration (install.env) was found in <somewhere>", which blames a
+  # directory the operator never chose and never prints the path they did.
+  #
+  # Before acquire_upgrade_sources on purpose. The pointer is also what
+  # checkout_owns_run_config compares against, so a nonexistent one makes the
+  # install checkout look like somebody else's and sends the run off to clone
+  # the engine into a temporary directory first -- work thrown away, and a
+  # worse directory to be named in the refusal that follows.
+  if [ -n "${KUBE_AGENTS_INSTALL_ENV:-}" ] && [ ! -f "${KUBE_AGENTS_INSTALL_ENV}" ]; then
+    print_error "KUBE_AGENTS_INSTALL_ENV names '${KUBE_AGENTS_INSTALL_ENV}', which does not exist."
+    print_info "Point it at the install's install.env, or unset it to search this run's sources, the current directory, and the install checkout in \$HOME/kube-agents."
     exit 1
   fi
 
@@ -1432,7 +1470,15 @@ main() {
   snapshot_moved_checkout_tfvars "${repo_dir}/terraform/examples/full-install/terraform.tfvars"
   # NAMESPACE steers the generator's Secret-recovery reads (install.env omits
   # credentials when PERSIST_SECRETS_ON_DISK=false; the live Secret has them).
+  #
+  # KUBE_AGENTS_REQUIRE_MEMORY_ANSWER: an upgrade applies (and --plan renders
+  # the same tfvars), so if the generator cannot tell whether this cluster runs
+  # the Hindsight memory store and nothing named a memory mode, it must stop
+  # rather than fall through to multiuser_memory and plan the database away.
+  # An install.env that records MEMORY never reaches that branch. uninstall.sh
+  # deliberately does not opt in.
   NAMESPACE="$target_namespace" \
+    KUBE_AGENTS_REQUIRE_MEMORY_ANSWER=true \
     write_tfvars_from_state "${repo_dir}/terraform/examples/full-install/terraform.tfvars" "$PARAM_IMAGE_TAG"
 
   if [ "$PARAM_PLAN" = "true" ]; then

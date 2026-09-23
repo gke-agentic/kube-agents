@@ -118,6 +118,7 @@ class InstallerCommonTest(unittest.TestCase):
         kms_versions="",
         sa_describe_stub="exit 1",
         gcloud_stderr=None,
+        gcloud_extra_cases="",
     ):
         """Source installer_common.sh with print stubs and run `script`.
 
@@ -125,6 +126,10 @@ class InstallerCommonTest(unittest.TestCase):
         `gcloud_exit` for `storage cat` calls on the state object;
         `clusters describe` runs `describe_stub` (default: exit 1, meaning
         the cluster does not exist).
+
+        `gcloud_extra_cases` is spliced in ahead of those arms, for the
+        subcommands the default stub does not model — `get-credentials` and
+        its `--help` probe.
         """
         # A failing `storage cat` with no stderr of its own reads as "absent":
         # that is what every pre-existing caller meant by gcloud_exit=1, and
@@ -144,6 +149,7 @@ class InstallerCommonTest(unittest.TestCase):
             gcloud.write_text(
                 "#!/usr/bin/env bash\n"
                 'case "$*" in\n'
+                f"{gcloud_extra_cases}"
                 f"  *\"clusters describe\"*) {describe_stub} ;;\n"
                 f"  *\"keys versions list\"*) printf '%s' '{kms_versions}'; exit 0 ;;\n"
                 f"  *\"service-accounts describe\"*) {sa_describe_stub} ;;\n"
@@ -152,6 +158,7 @@ class InstallerCommonTest(unittest.TestCase):
                 f"[ -f '{state_file}' ] && cat '{state_file}'\n"
                 f"exit {gcloud_exit}\n"
             )
+
             gcloud.chmod(gcloud.stat().st_mode | stat.S_IEXEC)
             # Hermetic kubectl: the generator recovers credentials from the
             # live Secret when it can, and a developer's real kube context
@@ -917,11 +924,16 @@ class InstallerCommonTest(unittest.TestCase):
         re-install without install.env or --memory), write_tfvars_from_state probes
         the live cluster and preserves kube_agents_memory if Hindsight is deployed,
         while still respecting an explicit MEMORY=file override."""
+        # `kubectl get … --ignore-not-found -o name` prints the object's own
+        # name when it is there and nothing at all when the API server says it
+        # is not, which is how the probe tells the two apart. Exiting 0 in
+        # silence, as this stub used to, is the *absent* answer.
         hindsight_kubectl = (
             "#!/usr/bin/env bash\n"
             'case "$*" in\n'
             '  *"current-context"*) echo "gke_test-project_us-central1_test-cluster"; exit 0 ;;\n'
-            '  *"get statefulset hindsight-postgresql"*) exit 0 ;;\n'
+            '  *"get statefulset hindsight-postgresql"*)\n'
+            '    echo "statefulset.apps/hindsight-postgresql"; exit 0 ;;\n'
             "esac\n"
             "exit 1\n"
         )
@@ -945,6 +957,186 @@ class InstallerCommonTest(unittest.TestCase):
             )
             self.assertIn("rc=0", proc_explicit.stdout, proc_explicit.stderr)
             self.assertIn('memory_provider          = "multiuser_memory"', dest.read_text())
+
+    # ── the live Hindsight probe: found / confirmed absent / could not ask ───
+    #
+    # The third outcome is the point of these. Reading "could not ask" as
+    # "not deployed" writes memory_provider = "multiuser_memory" and the apply
+    # deletes hindsight-postgresql and the volume holding the database.
+
+    # What gke_context_name() builds from _run's exported coordinates.
+    _THIS_CLUSTERS_CONTEXT = "gke_test-project_us-central1_test-cluster"
+
+    def _kubectl_that_cannot_answer(self):
+        """kubectl is pointed at this cluster but its reads fail for a reason
+        that is not NotFound — the shape of an expired credential, a 403, a
+        missing auth plugin, or an API server that times out."""
+        return (
+            "#!/usr/bin/env bash\n"
+            'case "$*" in\n'
+            f'  *"current-context"*) echo "{self._THIS_CLUSTERS_CONTEXT}"; exit 0 ;;\n'
+            "esac\n"
+            'echo "Unable to connect to the server: dial tcp 10.0.0.2:443: i/o timeout" >&2\n'
+            "exit 1\n"
+        )
+
+    def _kubectl_that_says_not_found(self):
+        """kubectl is pointed at this cluster and the API server answers
+        NotFound for both objects — a real, trustworthy absence."""
+        return (
+            "#!/usr/bin/env bash\n"
+            'case "$*" in\n'
+            f'  *"current-context"*) echo "{self._THIS_CLUSTERS_CONTEXT}"; exit 0 ;;\n'
+            "esac\n"
+            'echo "Error from server (NotFound): the server could not find the requested resource" >&2\n'
+            "exit 1\n"
+        )
+
+    def test_memory_probe_refuses_an_applying_caller_when_the_cluster_cannot_be_asked(self):
+        """A kubectl failure that is not NotFound must stop install.sh and
+        upgrade.sh rather than default to multiuser_memory."""
+        with tempfile.TemporaryDirectory() as out_dir:
+            dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            proc = self._run(
+                'print_info() { echo "INFO: $*" >&2; }; '
+                f'rc=0; write_tfvars_from_state "{dest}" || rc=$?; echo "rc=$rc"',
+                env={"API_SERVER_KEY": "k", "KUBE_AGENTS_REQUIRE_MEMORY_ANSWER": "true"},
+                describe_stub="printf 'True\\n'; exit 0",
+                kubectl_script=self._kubectl_that_cannot_answer(),
+            )
+            self.assertIn("rc=1", proc.stdout, proc.stderr)
+            self.assertIn("Cannot tell whether this cluster runs the Hindsight", proc.stderr)
+            # The reason reaches the operator, not just the verdict.
+            self.assertIn("i/o timeout", proc.stderr)
+            # The remedy has to work for whoever hit it: upgrade.sh has no
+            # --memory flag, so recording MEMORY is what gets named first.
+            self.assertIn("MEMORY=hindsight|file|off", proc.stderr)
+            # And nothing was written: a refusal that leaves tfvars behind is a
+            # refusal the next run reads as configuration.
+            self.assertFalse(dest.exists(), proc.stderr)
+
+    def test_memory_probe_warns_rather_than_refuses_for_a_caller_that_did_not_opt_in(self):
+        """uninstall.sh does not opt in: a destroy removes the store either
+        way, and an install has to keep a working way to remove itself."""
+        with tempfile.TemporaryDirectory() as out_dir:
+            dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            proc = self._run(
+                'print_warning() { echo "WARN: $*" >&2; }; '
+                f'rc=0; write_tfvars_from_state "{dest}" || rc=$?; echo "rc=$rc"',
+                env={"API_SERVER_KEY": "k"},
+                describe_stub="printf 'True\\n'; exit 0",
+                kubectl_script=self._kubectl_that_cannot_answer(),
+            )
+            self.assertIn("rc=0", proc.stdout, proc.stderr)
+            self.assertIn("Could not tell whether this cluster runs the Hindsight", proc.stderr)
+            self.assertIn('memory_provider          = "multiuser_memory"', dest.read_text())
+
+    def test_memory_probe_takes_a_definite_no_on_both_objects_as_a_real_absence(self):
+        """The one answer that does mean "no Hindsight here" still defaults,
+        and does it quietly — otherwise every ordinary install warns.
+
+        Two shapes, because --ignore-not-found changed which one is common: a
+        current kubectl exits 0 and prints nothing, while the API server's own
+        "Error from server (NotFound)" still arrives from older builds and for
+        a namespace that does not exist, where --ignore-not-found does not
+        apply. Both are the server having answered; neither may warn."""
+        shapes = {
+            "silent under --ignore-not-found": (
+                "#!/usr/bin/env bash\n"
+                'case "$*" in\n'
+                f'  *"current-context"*) echo "{self._THIS_CLUSTERS_CONTEXT}"; exit 0 ;;\n'
+                "esac\n"
+                "exit 0\n"
+            ),
+            "Error from server (NotFound)": self._kubectl_that_says_not_found(),
+        }
+        for shape, kubectl_script in shapes.items():
+            with self.subTest(shape=shape), tempfile.TemporaryDirectory() as out_dir:
+                dest = pathlib.Path(out_dir) / "terraform.tfvars"
+                proc = self._run(
+                    'print_warning() { echo "WARN: $*" >&2; }; '
+                    f'rc=0; write_tfvars_from_state "{dest}" || rc=$?; echo "rc=$rc"',
+                    env={"API_SERVER_KEY": "k", "KUBE_AGENTS_REQUIRE_MEMORY_ANSWER": "true"},
+                    describe_stub="printf 'True\\n'; exit 0",
+                    kubectl_script=kubectl_script,
+                )
+                self.assertIn("rc=0", proc.stdout, proc.stderr)
+                self.assertNotIn("Hindsight", proc.stderr)
+                self.assertIn('memory_provider          = "multiuser_memory"', dest.read_text())
+
+    def test_memory_probe_is_not_fooled_by_a_failure_that_merely_says_not_found(self):
+        """The regression this probe exists for. A workstation without the GKE
+        auth plugin fails with "executable gke-gcloud-auth-plugin not found" —
+        no API server was reached at all, but a substring match for "not found"
+        scores the whole cluster as having no Hindsight and the apply deletes
+        the database. Only the API server's own "Error from server (NotFound)"
+        is an absence."""
+        with tempfile.TemporaryDirectory() as out_dir:
+            dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            no_auth_plugin = (
+                "#!/usr/bin/env bash\n"
+                'case "$*" in\n'
+                f'  *"current-context"*) echo "{self._THIS_CLUSTERS_CONTEXT}"; exit 0 ;;\n'
+                "esac\n"
+                'echo "Unable to connect to the server: getting credentials: exec: '
+                'executable gke-gcloud-auth-plugin not found" >&2\n'
+                "exit 1\n"
+            )
+            proc = self._run(
+                'print_info() { echo "INFO: $*" >&2; }; '
+                f'rc=0; write_tfvars_from_state "{dest}" || rc=$?; echo "rc=$rc"',
+                env={"API_SERVER_KEY": "k", "KUBE_AGENTS_REQUIRE_MEMORY_ANSWER": "true"},
+                describe_stub="printf 'True\\n'; exit 0",
+                kubectl_script=no_auth_plugin,
+            )
+            self.assertIn("rc=1", proc.stdout, proc.stderr)
+            self.assertIn("Cannot tell whether this cluster runs the Hindsight", proc.stderr)
+            self.assertIn("gke-gcloud-auth-plugin", proc.stderr)
+            self.assertFalse(dest.exists(), proc.stderr)
+
+    def test_memory_probe_does_not_run_at_all_for_a_cluster_that_does_not_exist(self):
+        """A first install has nothing to preserve, and must not be stopped by
+        a question about a cluster that is not there yet."""
+        with tempfile.TemporaryDirectory() as out_dir:
+            dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            proc = self._run(
+                f'rc=0; write_tfvars_from_state "{dest}" || rc=$?; echo "rc=$rc"',
+                env={"API_SERVER_KEY": "k", "KUBE_AGENTS_REQUIRE_MEMORY_ANSWER": "true"},
+                kubectl_script=self._kubectl_that_cannot_answer(),
+            )
+            self.assertIn("rc=0", proc.stdout, proc.stderr)
+            self.assertIn('memory_provider          = "multiuser_memory"', dest.read_text())
+
+    def test_the_generators_credentials_fetch_asks_for_the_dns_endpoint(self):
+        """Without --dns-endpoint the fetch fails on a DNS-endpoint-only
+        cluster, the context gate misses, and every check that gate protects is
+        skipped against a cluster `terraform apply` reaches fine."""
+        with tempfile.TemporaryDirectory() as out_dir:
+            dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            recorded = pathlib.Path(out_dir) / "get-credentials.args"
+            # A gcloud that supports the flag, and a cluster publishing a DNS
+            # endpoint that accepts external traffic. `describe` answers on the
+            # --format it is given, as the real one does.
+            extra_cases = (
+                f'  *"get-credentials --help"*) echo "  --dns-endpoint"; exit 0 ;;\n'
+                f'  *"get-credentials"*) printf \'%s\\n\' "$*" >> "{recorded}"; exit 0 ;;\n'
+            )
+            describe_stub = (
+                'case "$*" in\n'
+                "  *dnsEndpointConfig*) printf 'gke-abc.us-central1.gke.goog\\tTrue\\n'; exit 0 ;;\n"
+                "esac\n"
+                "printf 'True\\n'; exit 0"
+            )
+            proc = self._run(
+                f'write_tfvars_from_state "{dest}"; echo "rc=$?"',
+                env={"API_SERVER_KEY": "k", "MEMORY": "file"},
+                describe_stub=describe_stub,
+                gcloud_extra_cases=extra_cases,
+                kubectl_script=self._kubectl_that_says_not_found(),
+            )
+            self.assertIn("rc=0", proc.stdout, proc.stderr)
+            self.assertTrue(recorded.exists(), f"get-credentials never ran: {proc.stderr}")
+            self.assertIn("--dns-endpoint", recorded.read_text())
 
     def test_tfvars_autopilot_floor_names_a_way_out_for_every_caller(self):
         # The abort's remedy has to work for whoever hit it. --enable-gvisor=false is

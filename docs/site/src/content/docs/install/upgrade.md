@@ -1,6 +1,6 @@
 ---
 title: Upgrade
-description: Moving an existing install to a newer release with upgrade.sh — its modes, how the target version is resolved, and what a run refuses before it changes anything.
+description: Moving an existing install to a newer release with upgrade.sh — its modes, how the target version is resolved, and what a run refuses before any of the new release is applied.
 ---
 
 `upgrade.sh` is the Day-2 engine for an install `install.sh` created. It re-applies the same
@@ -166,19 +166,33 @@ The run also writes a machine-readable report to `/tmp/kube-agents-upgrade-repor
 
 ## When an upgrade is refused
 
-These refusals happen before anything on the cluster moves.
+Every one of these stops the run before any of the new release is applied. The first three are
+settled before the run touches the cluster at all. The last two need the cluster: they are settled
+after `kubectl` has been pointed at it, and after a real run's pre-flight Secret backfills — a plan
+skips those — but still before any CRD, chart or Terraform change of the new release.
 
 - **The sources do not match the release.** The checkout's `HEAD` is not the release's commit, the
   tree has uncommitted changes, or an unpacked tree names a release other than the one asked for —
-  either in its `.release-bundle` marker or in the version stamped into its own `upgrade.sh`. A
-  release script carries its version with it, so standing in an older unpacked tree and running a
-  newer one is refused rather than silently applying the older tree. Start again from a clean
-  checkout or from the bundle of the release you want.
+  either in its `.release-bundle` marker or in the version stamped into its root scripts. A release
+  script carries its version with it, so standing in an older unpacked tree and running a newer one
+  is refused rather than silently applying the older tree. The stamp is read from `install.sh` and
+  `uninstall.sh` before `upgrade.sh`, because saving a newer `upgrade.sh` into an older tree
+  overwrites the one file that would otherwise be asked. Start again from a clean checkout or from
+  the bundle of the release you want.
+- **`KUBE_AGENTS_INSTALL_ENV` names a file that is not there.** An explicit pointer is taken
+  literally, not fallen back from, so a stale or mistyped value is reported with the path you gave
+  rather than searched past. Fix the path or unset the variable.
 - **No install configuration.** Neither `KUBE_AGENTS_INSTALL_ENV` nor an `install.env` was found in
   any of the configuration locations described at the top of this page. An install predating 0.4.0,
   which kept its settings in the retired `k8s-operator/scripts/vars.sh` and never gained an
   `install.env`, is refused here: copy those settings into an `install.env` first.
 - **No Helm release.** The target namespace has no `kube-agents` release to upgrade.
+- **The memory store cannot be checked and nothing named one.** When the configuration records no
+  `MEMORY`, the upgrade asks the cluster whether it runs the Hindsight memory store, so that a store
+  that is there is kept rather than planned away. If the cluster cannot be asked — `kubectl` is
+  pointed elsewhere, the credentials have expired, the API server times out — the run stops instead
+  of guessing. Record `MEMORY=hindsight|file|off` in `install.env`, or restore access to the cluster
+  and re-run.
 
 ## Where to go next
 

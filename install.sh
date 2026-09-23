@@ -3623,7 +3623,16 @@ run_menu_system() {
         #
         # No re-source: save_env_var exports as it writes, so the environment
         # write_tfvars_from_state reads is already current.
-        write_tfvars_from_state "$(tf_compose_dir "$repo_dir")/terraform.tfvars" "$image_tag"
+        #
+        # KUBE_AGENTS_REQUIRE_MEMORY_ANSWER, because run_lifecycle_apply below
+        # is a full apply. This panel is the front door most likely to reach the
+        # generator with no memory answer at all -- normalize_memory_vars returns
+        # immediately when install.env carries no MEMORY line, and --menu is
+        # dispatched before the prerequisite check, so kubectl may not even be
+        # usable -- and an operator reaches it to change a model provider, not to
+        # decide the fate of a database.
+        KUBE_AGENTS_REQUIRE_MEMORY_ANSWER=true \
+          write_tfvars_from_state "$(tf_compose_dir "$repo_dir")/terraform.tfvars" "$image_tag"
         # A provider or minter switch is where a new fixed-name GSA is first
         # planned on an existing install, so the 409 check runs here too.
         check_service_account_ownership || exit 1
@@ -4822,7 +4831,22 @@ main() {
   # install.sh is the one front door allowed to mint an API_SERVER_KEY, and only
   # after the generator has tried the live Secret. upgrade.sh and uninstall.sh
   # leave this unset so an unfindable key stays an error for them.
+  #
+  # KUBE_AGENTS_REQUIRE_MEMORY_ANSWER: "could not tell whether the cluster runs
+  # Hindsight" has to stop this run rather than fall through to multiuser_memory
+  # and let an apply delete the database. Unconditional, including under
+  # --dry-run and --generate-only, because both of those write this same
+  # tfvars_file in the real composition directory and --generate-only exists
+  # precisely to hand it to `lifecycle.sh apply` -- so a guess here is applied
+  # either way, just later and by someone who did not see the run that made it.
+  # That is why this does not take the warn-under---dry-run shape the coordinate
+  # checks use: those refuse before writing anything.
+  #
+  # Only reachable when nothing stated a memory mode -- PARAM_MEMORY_EXPLICIT is
+  # false, which left MEMORY_PROVIDER empty above -- and never on a cluster that
+  # does not exist yet. uninstall.sh deliberately does not opt in.
   KUBE_AGENTS_GENERATE_API_SERVER_KEY=true \
+    KUBE_AGENTS_REQUIRE_MEMORY_ANSWER=true \
     write_tfvars_from_state "$tfvars_file" "$image_tag"
   if [ "$PARAM_MEMORY_EXPLICIT" != "true" ]; then
     memory_provider="${MEMORY_PROVIDER:-$DEFAULT_MEMORY_PROVIDER}"

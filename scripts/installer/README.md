@@ -162,6 +162,19 @@ the hazard is a hand edit that deletes a line rather than setting it to `false`.
 `./upgrade.sh --plan` before a full upgrade and read any `destroy` line as missing
 configuration first and real drift second.
 
+`MEMORY` is the only one of the keys above that the generator goes and asks the cluster
+about, because it is the only one whose default deletes data rather than infrastructure
+Terraform can build again. That probe has three outcomes, not two. Found and confirmed
+absent behave as above; the third is "could not ask" — no `kubectl`, a context pointing at
+another cluster, an expired credential, a timeout — and there `install.sh` and `upgrade.sh`
+stop and say so rather than read silence as "no Hindsight here". Answer the question
+instead: record `MEMORY=hindsight|file|off` in `install.env` (`install.sh` also takes
+`--memory=`, and `MEMORY=…` in the environment answers for one run), or restore access to
+the cluster and re-run. The recording is named first because `upgrade.sh` has no `--memory`
+flag and would answer it with `Unknown parameter`. `uninstall.sh` does not stop, because a
+teardown removes the store either way and an install has to keep a working way to remove
+itself.
+
 Loading the input first is also what fixes non-interactive re-runs (#1060). Every
 `PARAM_X="${VAR:-}"` seed already knew how to inherit from the environment; giving it a
 file to inherit from makes inheritance the default path rather than something each flag
@@ -260,7 +273,7 @@ is a hand-authored dotenv and a hand may well write `export`.
   (`hack/ci-deploy.sh`) use — colour output, `init_var`/`load_state`,
   registry and third-party-image resolution, cluster connection helpers. Sources
   `installer_common.sh`, so nothing is defined twice.
-- **[gke_dns_endpoint.sh](gke_dns_endpoint.sh)**: `gke_dns_endpoint_flag`, which decides whether a given cluster should be reached with `get-credentials --dns-endpoint`. Kept out of `common.sh` and free of its helpers so `hack/ci-env.sh`, `scripts/release/common.sh`, `upgrade.sh`, and the staging-workload scripts can source the one predicate without also taking on the state file. It sets `GKE_DNS_ENDPOINT_FLAG` rather than echoing, so that callers do not run it in a `$(...)` subshell that would discard its memo of whether the local gcloud offers the flag at all. That answer leaves it empty — as do a cluster with no externally reachable DNS endpoint and a describe call that fails — leaving today's IP-endpoint command untouched.
+- **[gke_dns_endpoint.sh](gke_dns_endpoint.sh)**: `gke_dns_endpoint_flag`, which decides whether a given cluster should be reached with `get-credentials --dns-endpoint`. Kept out of `common.sh` and free of its helpers so that everything needing the one predicate can source it without also taking on the state file: `installer_common.sh`, `common.sh`, `install.sh`, `upgrade.sh`, `hack/ci-env.sh`, the release scripts (`scripts/release/common.sh`, `scripts/release/reconcile_environment.sh`), the staging-workload scripts, and `scripts/test_integration_contracts.py`, which sources it to hold it in step with `agents/platform/scripts/gke_endpoint.py`. `installer_common.sh` needs it for the credentials fetch the `terraform.tfvars` generator makes against an existing cluster, and sources it by path from its own directory; a caller that reaches the generator through `installer_common.sh` alone gets a warning and a stub that leaves the flag empty, which is still the command that reaches every cluster with a routable IP endpoint. That graceful path does not extend to `install.sh` and `common.sh`, which source the file directly and would fail on a tree that does not carry it. It sets `GKE_DNS_ENDPOINT_FLAG` rather than echoing, so that callers do not run it in a `$(...)` subshell that would discard its memo of whether the local gcloud offers the flag at all. That answer leaves it empty — as do a cluster with no externally reachable DNS endpoint and a describe call that fails — leaving today's IP-endpoint command untouched.
 - **[min_versions.sh](min_versions.sh)**: minimum tool versions, side-effect-free so
   `install.sh` can source it standalone before any checkout exists.
 - **[print_instructions_gchat.sh](print_instructions_gchat.sh)** /

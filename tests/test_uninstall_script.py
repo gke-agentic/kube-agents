@@ -329,6 +329,7 @@ class SourceRefDispatchTest(unittest.TestCase):
         args,
         ref_speaks_domain_scoped=False,
         home_install_env=None,
+        install_env_var=None,
     ):
         """Run the real uninstall.sh with a stub git on PATH.
 
@@ -340,7 +341,11 @@ class SourceRefDispatchTest(unittest.TestCase):
         `ref_speaks_domain_scoped` makes that stand-in advertise the
         domain-scoped flag names, which is how the hand-over tells which
         dialect the release it is about to exec parses.
+
+        `install_env_var` sets KUBE_AGENTS_INSTALL_ENV, which is otherwise
+        cleared so a developer's own shell cannot answer for the test.
         """
+
         with tempfile.TemporaryDirectory() as tmp:
             bin_dir = pathlib.Path(tmp) / "bin"
             bin_dir.mkdir()
@@ -374,7 +379,9 @@ class SourceRefDispatchTest(unittest.TestCase):
                 overrides={
                     "DISPATCH_LOG": str(dispatch_log),
                     "HOME": str(home_dir),
-                    "KUBE_AGENTS_INSTALL_ENV": "",
+                    "KUBE_AGENTS_INSTALL_ENV": (
+                        "" if install_env_var is None else str(install_env_var)
+                    ),
                 },
                 bin_dir=str(bin_dir),
             )
@@ -538,6 +545,66 @@ class SourceRefDispatchTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 1, combined)
         self.assertIn("records a different install than the flags name", combined)
         self.assertIsNone(log)
+
+    def test_source_ref_says_so_when_it_finds_no_install_env(self):
+        """The dangerous case the arm used to pass over in silence.
+
+        With no install.env anywhere and no coordinate flags, nothing is
+        forwarded and the pinned release — which for pre-0.4.0 refs does not
+        read install.env at all — falls back to DEFAULT_CLUSTER_NAME,
+        DEFAULT_REGION and gcloud's active project, which on a GCE host is the
+        machine's own. A teardown on flags alone is supported, so this warns
+        rather than refusing; what it must not do is say nothing.
+        """
+        proc, log = self._run(
+            ref_carries_uninstall=True,
+            ref_speaks_domain_scoped=True,
+            args=["--source-ref=v0.3.0", "--non-interactive"],
+        )
+        combined = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 0, combined)
+        self.assertIn("No install configuration (install.env) was found", combined)
+        self.assertIn("No coordinates are being forwarded either", combined)
+        self.assertIn("will aim at its own defaults", combined)
+        # It still hands over — warning, not refusal.
+        self.assertIsNotNone(log, combined)
+        self.assertEqual(log.split(), ["--non-interactive"])
+
+    def test_source_ref_stays_quiet_about_coordinates_it_was_given(self):
+        """Flags are a complete answer, so the second half of that warning is
+        only printed when nothing named the install at all."""
+        proc, log = self._run(
+            ref_carries_uninstall=True,
+            ref_speaks_domain_scoped=True,
+            args=[
+                "--source-ref=v0.3.0",
+                "--non-interactive",
+                "--gcp-project-id=p1",
+                "--gke-cluster-name=c1",
+                "--gcp-region=r1",
+            ],
+        )
+        combined = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 0, combined)
+        self.assertIn("No install configuration (install.env) was found", combined)
+        self.assertNotIn("No coordinates are being forwarded either", combined)
+        self.assertIsNotNone(log, combined)
+
+    def test_a_pointer_at_a_missing_file_is_refused_before_anything_is_cloned(self):
+        """resolve_uninstall_env_file returns an explicit pointer unchecked, so
+        a mistyped one used to reach the `[ -f ]` gate, forward nothing, and
+        hand over as if no configuration existed. An explicit pointer is a
+        typo, not a lookup order to fall through."""
+        proc, log = self._run(
+            ref_carries_uninstall=True,
+            args=["--source-ref=v0.3.0", "--non-interactive"],
+            install_env_var="/nonexistent/kube-agnets/install.env",
+        )
+        combined = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 1, combined)
+        self.assertIn("/nonexistent/kube-agnets/install.env", combined)
+        self.assertIn("which does not exist", combined)
+        self.assertIsNone(log, "the run handed over despite the bad pointer")
 
     def test_baked_release_version_does_not_trigger_recursive_source_ref_dispatch(self):
         """Verifies a stamped uninstall.sh (BAKED_RELEASE_VERSION set) does not trigger handover dispatch."""
