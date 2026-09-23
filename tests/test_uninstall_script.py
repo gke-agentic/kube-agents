@@ -358,6 +358,7 @@ class SourceRefDispatchTest(unittest.TestCase):
                 "        echo '# parses --gcp-project-id --gke-cluster-name --gcp-region --agent-namespace'\n"
                 "      fi\n"
                 "      echo 'printf \"%s\\n\" \"$@\" > \"$DISPATCH_LOG\"'\n"
+                "      echo 'if [ -n \"${KUBE_AGENTS_INSTALL_ENV:-}\" ]; then printf \"ENV_FILE=%s\\n\" \"$KUBE_AGENTS_INSTALL_ENV\" >> \"$DISPATCH_LOG\"; fi'\n"
                 '    } > "$dest/uninstall.sh"\n'
                 "  fi\n"
                 "fi\n"
@@ -484,27 +485,37 @@ class SourceRefDispatchTest(unittest.TestCase):
     def test_source_ref_forwards_coordinates_from_the_install_checkout(self):
         """The documented `--source-ref` one-liner passes no coordinate flags,
         and the cloned script's own repo_dir is a fresh temporary clone. The
-        wrapper resolves install.env from $HOME/kube-agents before handing over
-        and forwards the coordinates in the target release's flag dialect."""
+        wrapper resolves install.env from $HOME/kube-agents before handing over,
+        exports KUBE_AGENTS_INSTALL_ENV for the child, and forwards the
+        coordinates (including NAMESPACE) in the target release's flag dialect."""
         proc, log = self._run(
             ref_carries_uninstall=True,
-            args=["--source-ref=v0.3.0", "--non-interactive"],
+            ref_speaks_domain_scoped=True,
+            args=["--source-ref=v0.5.0", "--non-interactive"],
             home_install_env=(
                 'PROJECT_ID="from-home"\n'
                 'CLUSTER_NAME="home-cluster"\n'
                 'REGION="europe-north1"\n'
+                'NAMESPACE="custom-agents-ns"\n'
             ),
         )
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIsNotNone(log, proc.stdout + proc.stderr)
+        tokens = log.split()
         self.assertEqual(
-            log.split(),
+            tokens[:-1],
             [
                 "--non-interactive",
-                "--project-id=from-home",
-                "--cluster-name=home-cluster",
-                "--region=europe-north1",
+                "--gcp-project-id=from-home",
+                "--gke-cluster-name=home-cluster",
+                "--gcp-region=europe-north1",
+                "--agent-namespace=custom-agents-ns",
             ],
+        )
+        self.assertTrue(
+            tokens[-1].endswith("/home/kube-agents/install.env")
+            and tokens[-1].startswith("ENV_FILE="),
+            f"expected exported KUBE_AGENTS_INSTALL_ENV in child environment, got {tokens[-1]}",
         )
 
     def test_source_ref_refuses_when_flags_disagree_with_the_install_checkout(self):

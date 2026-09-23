@@ -390,6 +390,10 @@ memory_mode_from_provider() {
   esac
 }
 PARAM_MEMORY="${MEMORY:-$(memory_mode_from_provider "${MEMORY_PROVIDER:-}")}"
+PARAM_MEMORY_EXPLICIT="false"
+if [ -n "$PARAM_MEMORY" ]; then
+  PARAM_MEMORY_EXPLICIT="true"
+fi
 PARAM_ALLOWED_USERS="${ALLOWED_USERS:-}"
 PARAM_IMAGE_TAG="${IMAGE_TAG:-}"
 PARAM_MIGRATE_NODE_POOLS="${MIGRATE_NODE_POOLS:-}"
@@ -702,7 +706,7 @@ parse_args() {
       --enable-stockout-investigator|--enable-stockout|--enable-stockout-investigator=*|--enable-stockout=*)
         PARAM_ENABLE_STOCKOUT_INVESTIGATOR="$(flag_bool_value "$1")"
         validate_bool_flag_value "${1%%=*}" "$PARAM_ENABLE_STOCKOUT_INVESTIGATOR"; shift ;;
-      --memory=*) PARAM_MEMORY="${1#*=}"; shift ;;
+      --memory=*) PARAM_MEMORY="${1#*=}"; PARAM_MEMORY_EXPLICIT="true"; shift ;;
       --image-tag=*) PARAM_IMAGE_TAG="${1#*=}"; shift ;;
       --registry-prefix=*) PARAM_REGISTRY_PREFIX="${1#*=}"; shift ;;
       --third-party-registry-prefix=*) PARAM_THIRD_PARTY_REGISTRY_PREFIX="${1#*=}"; shift ;;
@@ -4659,6 +4663,7 @@ main() {
       2) memory_mode="hindsight" ;;
       3) memory_mode="off" ;;
     esac
+    PARAM_MEMORY_EXPLICIT="true"
   fi
 
   # bootstrap_install_env_file records PARAM_MEMORY, not this local, so the
@@ -4689,14 +4694,16 @@ main() {
   # install to ask (the CRD default, common.sh, and both profiles' config.yaml),
   # and `file` is what an install that says nothing about memory gets — the same
   # store those installs already had before the searchable one existed.
+  # When PARAM_MEMORY_EXPLICIT is false (--non-interactive with neither
+  # install.env nor --memory), leave MEMORY_PROVIDER empty when calling
+  # write_tfvars_from_state so the generator can preserve a live Hindsight
+  # deployment on an existing cluster before falling back to multiuser_memory.
   local memory_enabled="false"
-  # memory_provider_from_mode (installer_common.sh) owns the mode → provider
-  # table; upgrade.sh and the Day-2 menu resolve the same pair through it, and a
-  # second copy here is how the three drift. It returns empty for a mode it does
-  # not recognise, which is what the fallback covers.
-  local memory_provider
-  memory_provider="$(memory_provider_from_mode "$memory_mode")"
-  [ -n "$memory_provider" ] || memory_provider="$DEFAULT_MEMORY_PROVIDER"
+  local memory_provider=""
+  if [ "$PARAM_MEMORY_EXPLICIT" = "true" ]; then
+    memory_provider="$(memory_provider_from_mode "$memory_mode")"
+    [ -n "$memory_provider" ] || memory_provider="$DEFAULT_MEMORY_PROVIDER"
+  fi
 
   print_step "10. Resolving Install Configuration"
   local registry_prefix="${PARAM_REGISTRY_PREFIX%/}"
@@ -4817,6 +4824,14 @@ main() {
   # leave this unset so an unfindable key stays an error for them.
   KUBE_AGENTS_GENERATE_API_SERVER_KEY=true \
     write_tfvars_from_state "$tfvars_file" "$image_tag"
+  if [ "$PARAM_MEMORY_EXPLICIT" != "true" ]; then
+    memory_provider="${MEMORY_PROVIDER:-$DEFAULT_MEMORY_PROVIDER}"
+    export MEMORY_PROVIDER="$memory_provider"
+    if [ "$memory_provider" = "kube_agents_memory" ]; then
+      memory_mode="hindsight"
+      PARAM_MEMORY="hindsight"
+    fi
+  fi
   # After the generator, because its Secret-recovery loop is the thing that can
   # still supply the tokens; before the apply, because a relay without them
   # CrashLoops.

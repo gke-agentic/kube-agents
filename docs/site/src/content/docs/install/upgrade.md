@@ -120,8 +120,10 @@ exits before Terraform runs and writes nothing.
 
 Neither is refused by an edited checkout either. A preview of what an uncommitted change would
 apply is the one report that answers "what have I edited here", so both previews warn and continue
-where a real upgrade stops. The same split applies when the configuration the run loaded records a
-different install than the flags name — see [Naming the install](#naming-the-install).
+where a real upgrade stops. When the configuration the run loaded records a different install than
+the flags name, only `--dry-run` warns and continues — `--plan` refuses alongside a real upgrade
+because planning writes `terraform.tfvars` and reconfigures `.terraform/` in the working sources
+(see [Naming the install](#naming-the-install)).
 
 What a preview will not do is report on a run that could not happen: with no `install.env` anywhere
 it stops with the same refusal a real upgrade gives, rather than printing a plan you could not
@@ -137,9 +139,10 @@ mismatch writes one install's chat space, allowed users, model provider and name
 other.
 
 So the run compares them. When `--gcp-project-id`, `--gke-cluster-name` or `--gcp-region` names
-something the loaded `install.env` records differently, a real upgrade refuses and a preview
-reports it and goes on. Point `KUBE_AGENTS_INSTALL_ENV` at the `install.env` of the install you are
-upgrading, run from its checkout, or drop the flag that disagrees.
+something the loaded `install.env` records differently, both a real upgrade and `--plan` refuse,
+while `--dry-run` reports the mismatch and goes on. Point `KUBE_AGENTS_INSTALL_ENV` at the
+`install.env` of the install you are upgrading, run from its checkout, or drop the flag that
+disagrees.
 
 ## Checking the result
 

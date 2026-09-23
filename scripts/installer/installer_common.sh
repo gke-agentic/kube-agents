@@ -1440,6 +1440,10 @@ write_tfvars_from_state() {
   if [ -z "$memory_provider" ]; then
     memory_provider="$(memory_provider_from_mode "${MEMORY:-}")"
   fi
+  local memory_provider_explicit="false"
+  if [ -n "$memory_provider" ]; then
+    memory_provider_explicit="true"
+  fi
   : "${memory_provider:=${DEFAULT_MEMORY_PROVIDER}}"
 
   # cluster_mode follows the LIVE cluster when there is one. Hardcoding
@@ -1527,11 +1531,11 @@ write_tfvars_from_state() {
   TFVARS_CLUSTER_MODE="$cluster_mode"
   export TFVARS_CLUSTER_MODE
 
-  # Installing onto an existing cluster: fetch its credentials now, before the
-  # recovery loop below — adoption is exactly the case where the credentials
-  # live only in that cluster's Secret (a fresh clone has no install.env values),
-  # and recovery is gated on the kubectl context actually being this cluster.
-  if [ "$create_cluster" = "false" ] && command -v kubectl >/dev/null 2>&1; then
+  # Installing onto a cluster that already exists (whether adopted or managed
+  # by this install's Terraform state): fetch its credentials now, before the
+  # recovery loop below — recovery and the live Hindsight check are gated on
+  # the kubectl context actually being this cluster.
+  if [ "$cluster_exists" = "true" ] && command -v kubectl >/dev/null 2>&1; then
     gcloud container clusters get-credentials "${CLUSTER_NAME}" --location "${REGION}" \
       --project "${PROJECT_ID}" >/dev/null 2>&1 || true
   fi
@@ -1571,6 +1575,21 @@ write_tfvars_from_state() {
         print_info "Recovered ${secret_key} from the live '${PLATFORM_AGENT_SECRET}' Secret (install.env does not persist it)."
       fi
     done
+
+    # Preserve a live Hindsight deployment when the caller did not explicitly
+    # select a memory mode (for example, a non-interactive re-install without
+    # install.env or --memory, or an install.env missing the MEMORY line).
+    # Defaulting to multiuser_memory against a cluster that already runs
+    # Hindsight would plan the destruction of the hindsight-api Deployment and
+    # hindsight-postgresql StatefulSet.
+    if [ "$cluster_exists" = "true" ] && [ "$memory_provider_explicit" = "false" ]; then
+      if (trap - ERR; kubectl get statefulset hindsight-postgresql -n "${NAMESPACE:-$DEFAULT_NAMESPACE}" --request-timeout=10s >/dev/null 2>&1) ||
+        (trap - ERR; kubectl get deployment hindsight-api -n "${NAMESPACE:-$DEFAULT_NAMESPACE}" --request-timeout=10s >/dev/null 2>&1); then
+        memory_provider="kube_agents_memory"
+        export MEMORY_PROVIDER="kube_agents_memory"
+        print_info "Preserving live Hindsight deployment (memory_provider = \"kube_agents_memory\"); pass --memory=file or --memory=off to replace it."
+      fi
+    fi
   fi
 
   # Minting the key happens HERE, after the recovery loop above, and only for a

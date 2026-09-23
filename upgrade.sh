@@ -1235,8 +1235,8 @@ main() {
   # what gets loaded whatever --gke-cluster-name says. A full upgrade
   # re-renders the PlatformAgent CR from that file, so the mismatch does not
   # merely upgrade the wrong install: it writes A's chat space, allowed users,
-  # model provider and NAMESPACE into B. Same split as the dirty checkout and
-  # the release-tag cross-check: a real run refuses, a preview reports it.
+  # model provider and NAMESPACE into B. Unlike the dirty-checkout check, both
+  # a real run and --plan refuse here; only --dry-run reports it and goes on.
   #
   # Unconditional: a run with no configuration at all has already stopped above.
   local coordinate_conflicts=""

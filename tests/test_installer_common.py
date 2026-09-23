@@ -912,6 +912,40 @@ class InstallerCommonTest(unittest.TestCase):
             self._tfvars(env={"API_SERVER_KEY": "k"}),
         )
 
+    def test_memory_provider_preserves_live_hindsight_on_existing_cluster_when_unspecified(self):
+        """When neither MEMORY nor MEMORY_PROVIDER is set (e.g., a non-interactive
+        re-install without install.env or --memory), write_tfvars_from_state probes
+        the live cluster and preserves kube_agents_memory if Hindsight is deployed,
+        while still respecting an explicit MEMORY=file override."""
+        hindsight_kubectl = (
+            "#!/usr/bin/env bash\n"
+            'case "$*" in\n'
+            '  *"current-context"*) echo "gke_test-project_us-central1_test-cluster"; exit 0 ;;\n'
+            '  *"get statefulset hindsight-postgresql"*) exit 0 ;;\n'
+            "esac\n"
+            "exit 1\n"
+        )
+        with tempfile.TemporaryDirectory() as out_dir:
+            dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            proc = self._run(
+                f'write_tfvars_from_state "{dest}"; echo "rc=$? provider=${{MEMORY_PROVIDER:-}}"',
+                env={"API_SERVER_KEY": "k"},
+                describe_stub="printf 'True\\n'; exit 0",
+                kubectl_script=hindsight_kubectl,
+            )
+            self.assertIn("rc=0 provider=kube_agents_memory", proc.stdout, proc.stderr)
+            self.assertIn('memory_provider          = "kube_agents_memory"', dest.read_text())
+
+            # An explicit MEMORY=file (--memory=file or install.env) still wins.
+            proc_explicit = self._run(
+                f'write_tfvars_from_state "{dest}"; echo "rc=$? provider=${{MEMORY_PROVIDER:-}}"',
+                env={"API_SERVER_KEY": "k", "MEMORY": "file"},
+                describe_stub="printf 'True\\n'; exit 0",
+                kubectl_script=hindsight_kubectl,
+            )
+            self.assertIn("rc=0", proc_explicit.stdout, proc_explicit.stderr)
+            self.assertIn('memory_provider          = "multiuser_memory"', dest.read_text())
+
     def test_tfvars_autopilot_floor_names_a_way_out_for_every_caller(self):
         # The abort's remedy has to work for whoever hit it. --enable-gvisor=false is
         # install.sh's; upgrade.sh rejects that flag and reads install.env

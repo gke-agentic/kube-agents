@@ -105,19 +105,24 @@ reach `write_tfvars_from_state` and the `TF_VAR_*` handoff, both of which read t
 environment. Order of authority is **flag, then file, then an exported variable, then
 the defaults above** — `set -a` sourcing means a key the file carries overwrites an
 export of the same name, so a flag is what overrides a recorded value for one run.
-One key ignores the environment: the front doors clear a shell-exported `NAMESPACE`
-before reading the file, because kubectl tooling exports that name and the value now
-reaches the Helm release's namespace. The file and `--agent-namespace` are the two
-routes in. The dev tooling's `load_state` clears it the same way.
+One key ignores the environment in every front door: `install.sh`, `upgrade.sh`, and
+`uninstall.sh` clear a shell-exported `NAMESPACE` before reading the file, because kubectl
+tooling exports that name and the value now reaches the Helm release's namespace. The file
+and `--agent-namespace` are the two routes in (`common.sh`'s `load_state` clears it the
+same way). `upgrade.sh` and `uninstall.sh` also clear shell-exported `PROJECT_ID`,
+`CLUSTER_NAME`, and `REGION` before reading `install.env`, so ambient GCP exports in the
+caller's shell cannot steer a Day-2 run at a different cluster or be mistaken for keys
+recorded in `install.env` — pass `--gcp-project-id`, `--gke-cluster-name`, and `--gcp-region`
+for a one-run coordinate override.
 `KUBE_AGENTS_INSTALL_ENV` points at a different path, which is how CI renders one from
 its own variables rather than keeping install state on an ephemeral runner.
 
 Which file that is, for a front door that has to go and find one: `KUBE_AGENTS_INSTALL_ENV`
 first, then the checkout the run's own sources came from, then the working directory,
-and last the install checkout in `$HOME/kube-agents`. `upgrade.sh` reaches that last
-candidate on the path the release-pinned one-liner takes — it has no checkout of its own,
-so the installer's is where the install's configuration is — and it is last rather than
-first so that a workstation managing two installs upgrades the one whose directory the
+and last the install checkout in `$HOME/kube-agents`. `upgrade.sh` and `uninstall.sh` reach
+that last candidate on the path the release-pinned one-liner takes — it has no checkout of
+its own, so the installer's is where the install's configuration is — and it is last rather
+than first so that a workstation managing two installs acts on the one whose directory the
 operator is standing in, not whichever one that shared checkout belongs to.
 
 `install.sh` reads it and does not rewrite it. It creates one at the end of a first
@@ -142,7 +147,10 @@ That precedence has a sharp edge on an install that already exists. A key missin
 into `terraform.tfvars`, and `upgrade.sh --upgrade-mode=full` then plans the destruction of
 whatever the default does not mention. `ENABLE_GVISOR` absent destroys the gVisor node pool
 on a Standard cluster (`write_tfvars_from_state` falls back to `false` for that key, not to
-`install.defaults.env`'s `true`); `MEMORY` absent destroys the Hindsight API and its Postgres;
+`install.defaults.env`'s `true`); `MEMORY` absent falls back to `file` unless
+`write_tfvars_from_state` finds a live Hindsight deployment (`hindsight-postgresql` or
+`hindsight-api`) on the target cluster, in which case `kube_agents_memory` is preserved
+(`--memory=file` or `MEMORY=file` is required to tear it down);
 `ENABLE_GKE_BACKUP_PLAN` absent destroys the backup plan; `ENABLE_STOCKOUT_INVESTIGATOR`
 absent destroys the stockout log sink, its alerts topic and subscription, and their IAM
 grants; `ENABLE_PUBSUB_PLATFORM` absent removes the adapter plugin from the release (the

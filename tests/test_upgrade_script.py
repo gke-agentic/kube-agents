@@ -1284,6 +1284,9 @@ exit {exit_code}
         stale_bundle = home_dir / "kube-agents-plain"
         stale_bundle.mkdir()
         (stale_bundle / "install.sh").write_text("an unpacked bundle of some other release\n")
+        # Give it an install.env so checkout_owns_run_config passes and only
+        # is_kube_agents_clone stands between this directory and adoption.
+        (stale_bundle / "install.env").write_text('PROJECT_ID="my-gcp-project"\n')
         # Put the plain directory where the upgrader looks.
         clone_dir.rename(home_dir / "kube-agents-real")
         stale_bundle.rename(clone_dir)
@@ -1308,6 +1311,7 @@ exit {exit_code}
         self._git("config", "commit.gpgsign", "false", cwd=clone_dir)
         (clone_dir / "README.md").write_text("not kube-agents\n")
         (clone_dir / "install.sh").write_text("#!/usr/bin/env bash\necho foreign installer\n")
+        (clone_dir / "install.env").write_text('PROJECT_ID="my-gcp-project"\n')
         self._git("add", "README.md", "install.sh", cwd=clone_dir)
         self._git("commit", "-m", "init", cwd=clone_dir)
         before = self._head_of(clone_dir)
@@ -1635,9 +1639,13 @@ exit {exit_code}
         base = home_dir.parent
         stub_bin = base / "stub-bin"
         stub_bin.mkdir(exist_ok=True)
-        # operator mode's required_tools, and no more: it needs neither jq nor
-        # terraform, so a host missing either still runs this.
-        for tool, exit_code in (("gcloud", gcloud_exit), ("kubectl", 0), ("helm", 0)):
+        for tool, exit_code in (
+            ("gcloud", gcloud_exit),
+            ("kubectl", 0),
+            ("helm", 0),
+            ("terraform", 0),
+            ("jq", 0),
+        ):
             stub = stub_bin / tool
             stub.write_text(f"#!/usr/bin/env bash\nexit {exit_code}\n")
             stub.chmod(0o755)
@@ -1846,6 +1854,7 @@ exit {exit_code}
 
         combined = proc.stdout + proc.stderr
         self.assertEqual(proc.returncode, 1, combined)
+        self.assertNotIn("Required CLI tool", combined)
         self.assertIn("records a different install than the flags name", combined)
         self.assertEqual(tfvars.read_text(), 'cluster_name = "install-a"\n')
 
