@@ -57,7 +57,9 @@ Once the CR is gone, the operator's finalizer first removes the cluster-scoped R
 
 ### Naming the install to tear down
 
-Pass `--gcp-project-id`, `--gke-cluster-name`, and `--gcp-region` to name the target explicitly. Otherwise the coordinates come from `install.env`, looked for in the same order the upgrade uses: `KUBE_AGENTS_INSTALL_ENV`, then the checkout the script runs from, then the directory you run it from, then the install checkout the installer left in `$HOME/kube-agents`. The last of those is what the piped one-liner reaches, since it runs from a clone it just made and there is no directory to stand in.
+Pass `--gcp-project-id`, `--gke-cluster-name`, and `--gcp-region` to name the target explicitly. Otherwise the coordinates come from `install.env`, looked for in the same order the upgrade uses: `KUBE_AGENTS_INSTALL_ENV`, then the checkout the script runs from, then the directory you run it from, then the install checkout the installer left in `$HOME/kube-agents`. The last of those is what the piped one-liner reaches, since it runs from a clone it just made and there is no directory to stand in — and when `--source-ref` hands over to an older release's `uninstall.sh`, the wrapper resolves the file first and forwards those coordinates in the target release's flag dialect.
+
+As in the upgrade, when both a flag and a loaded `install.env` are present and they disagree, a real teardown refuses rather than reading one install's state backend and `terraform.tfvars` settings while naming another, and `--dry-run` warns and continues.
 
 Unlike the upgrade, a teardown does not refuse without configuration: naming the three coordinates is enough, and `./uninstall.sh` inside a checkout of a default install works on defaults alone. What it will not do is present a default as the install's own — when the cluster or region falls back to the built-in default, or the project comes from `gcloud`'s active configuration (which on a GCE instance is the project the machine itself lives in), the run says which value it guessed before the confirmation prompt.
 

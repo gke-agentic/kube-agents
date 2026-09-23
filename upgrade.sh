@@ -1149,6 +1149,11 @@ main() {
   # preview reads its engine from a temporary copy, which has no install.env.
   local install_env_file
   install_env_file="$(resolve_install_env_file "$repo_dir" "$install_checkout")"
+  # Clear any shell-exported coordinates before sourcing the file: load_install_env
+  # only unsets NAMESPACE, so without this an install.env that omits REGION while
+  # the caller's shell exports REGION=europe-west1 would make the cross-check
+  # below blame install.env for a value the file never recorded.
+  unset PROJECT_ID CLUSTER_NAME REGION
   if load_install_env "$install_env_file"; then
     print_success "Loaded install configuration from: ${install_env_file}"
   else

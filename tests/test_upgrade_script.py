@@ -1523,7 +1523,9 @@ exit {exit_code}
         self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), "")
         self.assertNotEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
 
-    def _whole_run_through_a_real_pipe(self, home_dir, upstream_url, args, cwd=None, gcloud_exit=0):
+    def _whole_run_through_a_real_pipe(
+        self, home_dir, upstream_url, args, cwd=None, gcloud_exit=0, extra_env=None
+    ):
         """Run main() end to end, with the script arriving on stdin.
 
         Everything above this point stops at a function boundary: the
@@ -1555,6 +1557,8 @@ exit {exit_code}
         # The run has to resolve the file for itself; a pointer in the
         # developer's environment would answer before the hand-off did.
         env.pop("KUBE_AGENTS_INSTALL_ENV", None)
+        if extra_env:
+            env.update(extra_env)
         return subprocess.run(
             ["bash", "-s", "--", *args],
             input=script.replace(default_remote, f'KUBE_AGENTS_REPO_URL="{upstream_url}"', 1),
@@ -1748,6 +1752,34 @@ exit {exit_code}
         self.assertNotIn("Refusing to upgrade", combined)
         # It stopped where the previous test's run did: at the credentials fetch.
         self.assertNotEqual(proc.returncode, 0)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+
+    def test_a_shell_exported_coordinate_is_not_mistaken_for_a_key_in_install_env(self):
+        """An ambient `export REGION=...` in the caller's shell is not a key in
+        install.env, so when install.env omits REGION and the caller passes
+        --gcp-region, the cross-check must not blame install.env for a value the
+        file never recorded."""
+        home_dir, clone_dir, upstream_url, commits = self._fixture_configured_for("install-a")
+
+        proc = self._whole_run_through_a_real_pipe(
+            home_dir,
+            upstream_url,
+            [
+                "--image-tag=0.3.0",
+                "--upgrade-mode=operator",
+                "--non-interactive",
+                "--gke-cluster-name=install-a",
+                "--gcp-project-id=my-gcp-project",
+                "--gcp-region=us-central1",
+            ],
+            gcloud_exit=1,
+            extra_env={"REGION": "europe-west1"},
+        )
+
+        combined = proc.stdout + proc.stderr
+        self.assertNotIn("records a different install", combined)
+        self.assertNotIn("was written for another install", combined)
+        self.assertNotIn("Refusing to upgrade", combined)
         self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
 
 

@@ -273,7 +273,12 @@ bash -c "exit 3"
                 # get_isolated_test_env strips only GITHUB_*/RUNNER_*/CI/GH_TOKEN,
                 # so a maintainer's exported bucket would otherwise reach the
                 # explicitly-named-bucket branch and change the answer.
-                overrides={"PATH": str(bin_dir), "KUBE_AGENTS_STATE_BUCKET": ""},
+                overrides={
+                    "PATH": str(bin_dir),
+                    "HOME": str(pathlib.Path(tmp) / "empty-home"),
+                    "KUBE_AGENTS_INSTALL_ENV": "",
+                    "KUBE_AGENTS_STATE_BUCKET": "",
+                },
             ),
             cwd=str(tmp),
         )
@@ -318,7 +323,13 @@ bash -c "exit 3"
 
 
 class SourceRefDispatchTest(unittest.TestCase):
-    def _run(self, ref_carries_uninstall, args, ref_speaks_domain_scoped=False):
+    def _run(
+        self,
+        ref_carries_uninstall,
+        args,
+        ref_speaks_domain_scoped=False,
+        home_install_env=None,
+    ):
         """Run the real uninstall.sh with a stub git on PATH.
 
         The stub's `clone` creates the target directory and, when
@@ -353,8 +364,17 @@ class SourceRefDispatchTest(unittest.TestCase):
                 "exit 0\n"
             )
             git.chmod(git.stat().st_mode | stat.S_IEXEC)
+            home_dir = pathlib.Path(tmp) / "home"
+            home_dir.mkdir()
+            if home_install_env is not None:
+                (home_dir / "kube-agents").mkdir()
+                (home_dir / "kube-agents" / "install.env").write_text(home_install_env)
             full_env = get_isolated_test_env(
-                overrides={"DISPATCH_LOG": str(dispatch_log)},
+                overrides={
+                    "DISPATCH_LOG": str(dispatch_log),
+                    "HOME": str(home_dir),
+                    "KUBE_AGENTS_INSTALL_ENV": "",
+                },
                 bin_dir=str(bin_dir),
             )
             proc = subprocess.run(
@@ -456,6 +476,53 @@ class SourceRefDispatchTest(unittest.TestCase):
         self.assertIn("carries no uninstall.sh", proc.stdout)
         self.assertIsNone(log)
 
+    def test_source_ref_forwards_coordinates_from_the_install_checkout(self):
+        """The documented `--source-ref` one-liner passes no coordinate flags,
+        and the cloned script's own repo_dir is a fresh temporary clone. The
+        wrapper resolves install.env from $HOME/kube-agents before handing over
+        and forwards the coordinates in the target release's flag dialect."""
+        proc, log = self._run(
+            ref_carries_uninstall=True,
+            args=["--source-ref=v0.3.0", "--non-interactive"],
+            home_install_env=(
+                'PROJECT_ID="from-home"\n'
+                'CLUSTER_NAME="home-cluster"\n'
+                'REGION="europe-north1"\n'
+            ),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIsNotNone(log, proc.stdout + proc.stderr)
+        self.assertEqual(
+            log.split(),
+            [
+                "--non-interactive",
+                "--project-id=from-home",
+                "--cluster-name=home-cluster",
+                "--region=europe-north1",
+            ],
+        )
+
+    def test_source_ref_refuses_when_flags_disagree_with_the_install_checkout(self):
+        """A `--source-ref` run that loads install A's configuration while its
+        flags name install B must refuse before dispatching to the child."""
+        proc, log = self._run(
+            ref_carries_uninstall=True,
+            args=[
+                "--source-ref=v0.3.0",
+                "--non-interactive",
+                "--gcp-project-id=from-home",
+                "--gke-cluster-name=install-b",
+            ],
+            home_install_env=(
+                'PROJECT_ID="from-home"\n'
+                'CLUSTER_NAME="install-a"\n'
+            ),
+        )
+        combined = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 1, combined)
+        self.assertIn("records a different install than the flags name", combined)
+        self.assertIsNone(log)
+
     def test_baked_release_version_does_not_trigger_recursive_source_ref_dispatch(self):
         """Verifies a stamped uninstall.sh (BAKED_RELEASE_VERSION set) does not trigger handover dispatch."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -553,15 +620,26 @@ class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
     def _scratch_repo(self, tmp):
         """A checkout with the engine markers, but no install.env of its own."""
         root = pathlib.Path(tmp) / "repo"
-        (root / "terraform" / "examples" / "full-install").mkdir(parents=True)
-        (root / "scripts" / "installer").mkdir(parents=True)
+        (root / "terraform" / "examples" / "full-install").mkdir(parents=True, exist_ok=True)
+        (root / "scripts" / "installer").mkdir(parents=True, exist_ok=True)
+        (root / "install.env").unlink(missing_ok=True)
         (root / "terraform" / "examples" / "full-install" / "lifecycle.sh").touch()
         shutil.copy(_UNINSTALL_SH, root / "uninstall.sh")
         shutil.copy(_INSTALLER_COMMON, root / "scripts" / "installer" / "installer_common.sh")
         shutil.copy(_INSTALL_DEFAULTS, root / "install.defaults.env")
         return root
 
-    def _preview(self, tmp, home, args=()):
+    def _preview(
+        self,
+        tmp,
+        home,
+        args=(),
+        dry_run=True,
+        cwd_install_env=None,
+        repo_install_env=None,
+        explicit_install_env=None,
+        extra_env=None,
+    ):
         """A --dry-run teardown from a neutral directory, with HOME moved.
 
         --dry-run because everything under test happens before it: the
@@ -581,19 +659,29 @@ class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
         gcloud.chmod(gcloud.stat().st_mode | stat.S_IEXEC)
         neutral = pathlib.Path(tmp) / "neutral"
         neutral.mkdir(exist_ok=True)
+        (neutral / "install.env").unlink(missing_ok=True)
+        if cwd_install_env is not None:
+            (neutral / "install.env").write_text(cwd_install_env)
         root = self._scratch_repo(tmp)
+        if repo_install_env is not None:
+            (root / "install.env").write_text(repo_install_env)
+        overrides = {
+            "PATH": str(bin_dir),
+            "HOME": str(home),
+            "KUBE_AGENTS_STATE_BUCKET": "",
+            "KUBE_AGENTS_INSTALL_ENV": str(explicit_install_env) if explicit_install_env else "",
+        }
+        if extra_env:
+            overrides.update(extra_env)
+        cmd = ["bash", str(root / "uninstall.sh"), "--non-interactive"]
+        if dry_run:
+            cmd.append("--dry-run")
+        cmd.extend(args)
         return subprocess.run(
-            ["bash", str(root / "uninstall.sh"), "--dry-run", "--non-interactive", *args],
+            cmd,
             capture_output=True,
             text=True,
-            env=get_isolated_test_env(
-                overrides={
-                    "PATH": str(bin_dir),
-                    "HOME": str(home),
-                    "KUBE_AGENTS_STATE_BUCKET": "",
-                    "KUBE_AGENTS_INSTALL_ENV": "",
-                }
-            ),
+            env=get_isolated_test_env(overrides=overrides),
             cwd=str(neutral),
         )
 
@@ -660,6 +748,129 @@ class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
             self.assertIn("named-cluster in named-project (named-region)", combined)
             self.assertNotIn("is a guess", combined)
             self.assertNotIn("came from gcloud's active configuration", combined)
+
+    def test_the_resolution_order_prefers_explicit_then_repo_then_pwd_over_home(self):
+        """Pins every arm of resolve_uninstall_env_file in precedence order:
+        KUBE_AGENTS_INSTALL_ENV > repo_dir/install.env > $(pwd)/install.env >
+        $HOME/kube-agents/install.env."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp) / "home"
+            (home / "kube-agents").mkdir(parents=True)
+            (home / "kube-agents" / "install.env").write_text(
+                'PROJECT_ID="p"\nCLUSTER_NAME="from-home"\nREGION="r"\n'
+            )
+            explicit_file = pathlib.Path(tmp) / "explicit.env"
+            explicit_file.write_text(
+                'PROJECT_ID="p"\nCLUSTER_NAME="from-explicit"\nREGION="r"\n'
+            )
+
+            # 1. $(pwd)/install.env beats $HOME/kube-agents/install.env
+            proc_pwd = self._preview(
+                tmp,
+                home,
+                cwd_install_env='PROJECT_ID="p"\nCLUSTER_NAME="from-pwd"\nREGION="r"\n',
+            )
+            self.assertIn("from-pwd in p (r)", proc_pwd.stdout + proc_pwd.stderr)
+
+            # 2. repo_dir/install.env beats $(pwd)/install.env and $HOME/kube-agents/install.env
+            proc_repo = self._preview(
+                tmp,
+                home,
+                cwd_install_env='PROJECT_ID="p"\nCLUSTER_NAME="from-pwd"\nREGION="r"\n',
+                repo_install_env='PROJECT_ID="p"\nCLUSTER_NAME="from-repo"\nREGION="r"\n',
+            )
+            self.assertIn("from-repo in p (r)", proc_repo.stdout + proc_repo.stderr)
+
+            # 3. KUBE_AGENTS_INSTALL_ENV beats all three
+            proc_explicit = self._preview(
+                tmp,
+                home,
+                cwd_install_env='PROJECT_ID="p"\nCLUSTER_NAME="from-pwd"\nREGION="r"\n',
+                repo_install_env='PROJECT_ID="p"\nCLUSTER_NAME="from-repo"\nREGION="r"\n',
+                explicit_install_env=explicit_file,
+            )
+            self.assertIn("from-explicit in p (r)", proc_explicit.stdout + proc_explicit.stderr)
+
+    def test_a_real_teardown_refuses_when_the_configuration_belongs_to_another_install(self):
+        """$HOME/kube-agents/install.env belongs to install-a; the flags name
+        install-b. Without this check, install-a's NAMESPACE and custom
+        KUBE_AGENTS_STATE_PREFIX stay exported and steer the state lookup and
+        terraform.tfvars regeneration for install-b."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp) / "home"
+            (home / "kube-agents").mkdir(parents=True)
+            (home / "kube-agents" / "install.env").write_text(
+                'PROJECT_ID="my-gcp-project"\nCLUSTER_NAME="install-a"\nREGION="us-central1"\n'
+            )
+
+            proc = self._preview(
+                tmp,
+                home,
+                dry_run=False,
+                args=("--gke-cluster-name=install-b",),
+            )
+
+            combined = proc.stdout + proc.stderr
+            self.assertEqual(proc.returncode, 1, combined)
+            self.assertIn("records a different install than the flags name", combined)
+            self.assertIn("--gke-cluster-name=install-b, but CLUSTER_NAME=install-a", combined)
+
+    def test_a_dry_run_over_another_installs_configuration_warns_and_goes_on(self):
+        """A --dry-run preview reports the disagreement and continues, matching
+        upgrade.sh's preview split."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp) / "home"
+            (home / "kube-agents").mkdir(parents=True)
+            (home / "kube-agents" / "install.env").write_text(
+                'PROJECT_ID="my-gcp-project"\nCLUSTER_NAME="install-a"\nREGION="us-central1"\n'
+            )
+
+            proc = self._preview(
+                tmp,
+                home,
+                dry_run=True,
+                args=("--gke-cluster-name=install-b",),
+            )
+
+            combined = proc.stdout + proc.stderr
+            self.assertEqual(proc.returncode, 0, combined)
+            self.assertIn("was written for another install", combined)
+            self.assertIn("--gke-cluster-name=install-b, but CLUSTER_NAME=install-a", combined)
+            self.assertIn("Dry-Run Uninstall Preview", combined)
+
+    def test_a_shell_exported_coordinate_does_not_blame_install_env_or_mask_a_guess(self):
+        """An exported REGION in the operator's shell is neither a key in
+        install.env nor an explicit flag: it must not trigger a false conflict
+        against --gcp-region, and when no flag is given it must still be warned
+        about as a default."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp) / "home"
+            (home / "kube-agents").mkdir(parents=True)
+            (home / "kube-agents" / "install.env").write_text(
+                'PROJECT_ID="my-gcp-project"\nCLUSTER_NAME="install-a"\n'
+            )
+
+            proc_flag = self._preview(
+                tmp,
+                home,
+                dry_run=True,
+                args=("--gcp-region=us-central1",),
+                extra_env={"REGION": "europe-west1"},
+            )
+            combined_flag = proc_flag.stdout + proc_flag.stderr
+            self.assertEqual(proc_flag.returncode, 0, combined_flag)
+            self.assertNotIn("was written for another install", combined_flag)
+            self.assertNotIn("records a different install", combined_flag)
+
+            proc_guess = self._preview(
+                tmp,
+                home,
+                dry_run=True,
+                extra_env={"REGION": "europe-west1"},
+            )
+            combined_guess = proc_guess.stdout + proc_guess.stderr
+            self.assertEqual(proc_guess.returncode, 0, combined_guess)
+            self.assertIn("region 'us-central1' is installer_common.sh's default", combined_guess)
 
 
 if __name__ == "__main__":
