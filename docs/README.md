@@ -19,7 +19,9 @@ hold tooling — review skills, agent rules, PR templates, agent config — not
 documentation; they are out of the map's scope and `docs-check-map` exempts
 them. `.agents/rules/` is the one the canonical-home table in `AGENTS.md`
 points at, so a rule's home is found through that table rather than through
-this map.
+this map. `.claude/skills` and `.claude/rules` are relative symlinks into
+`.agents/`, not copies, so Claude Code reads the same files every other
+harness does; `tests/test_agent_discovery_hooks.py` holds them to that.
 
 This file states **no document counts**, anywhere — not a repository total, not
 a per-directory total, not a per-family total. A count is a number every
