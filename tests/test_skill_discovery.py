@@ -10,7 +10,9 @@ and follows a procedure pinned to a release tag, or the model answers from
 whatever it absorbed about open-source installers and invents a plausible URL.
 #1332 is the second outcome, observed: a fabricated
 `gke-labs.github.io/.../install.sh`, the namespace `agent-system`, and a model
-version this project has never shipped.
+version this project has never shipped. That session had no checkout open, so
+nothing here would have saved it; what this file covers is the case where the
+checkout *is* there and the skills are still not found.
 
 Two mechanisms stand between those outcomes, and nothing checked either one.
 
@@ -27,10 +29,9 @@ property of those harnesses, cannot be checked from this tree, and is stated
 here so a reader knows it rests on their documentation rather than on a test.
 
 The second mechanism is the frontmatter. Every harness above loads skill names
-and descriptions at session start and the full `SKILL.md` only once the
-description matches what the user asked for, so on the install path the
-description *is* the discovery mechanism -- the body cannot be consulted to
-decide whether to consult the body. Two ways it fails silently:
+and descriptions at session start and the full `SKILL.md` only once one of
+them matches the request -- the body cannot be consulted to decide whether to
+consult the body. Two ways that fails silently:
 
 * the block stops being loadable. A description holding `: ` or opening with
   `{`, `[`, `*` or `&` is a YAML error, and a harness that cannot parse the
@@ -39,22 +40,35 @@ decide whether to consult the body. Two ways it fails silently:
   harness parses it, with `yaml.safe_load`, and not with a regex that would
   wave the broken case through;
 * the words stop matching the request. `Discovers and removes provisioned
-  kube-agents GCP/GKE infrastructure` is an accurate sentence about the
-  uninstall skill that never says "uninstall". The floor below is therefore
-  the shape a request takes and not a bag of substrings: the description
-  *opens* with the action verb a user types, and names the product. It is a
-  floor and not a phrasebook -- everything after the first word is free --
-  because a test that pins whole sentences is a test that gets deleted the
-  first time someone improves one.
+  kube-agents GCP/GKE infrastructure` was the uninstall skill's description
+  until the commit that added this file: an accurate sentence about the skill
+  that never says "uninstall".
+
+  How much that second one costs is worth stating precisely, because it was
+  measured and the answer was "not as much as you would think". Asked to "tear
+  kube-agents out of that project", a fresh session picked the uninstall skill
+  from that description anyway -- the directory name is `uninstall-kube-agents`
+  and is loaded beside it, and the name carried the match. The same held for
+  all three lifecycle skills under both wordings. So the floor below is not
+  what makes these skills reachable today, and this file would be dishonest to
+  claim otherwise. What it holds is the pair: a name and a description that
+  degrade together leave nothing, and the name is the half most likely to be
+  kept while a description is rewritten. It is a floor and not a phrasebook --
+  everything after the first word is free -- because a test that pins whole
+  sentences is a test that gets deleted the first time someone improves one.
 
 Scope is this repository's own skills, under `.agents/skills/`. The skills
 baked into the agent images (`agents/<profile>/skills/`) are loaded by Hermes
 from a profile home, not discovered from a checkout, and
-`scripts/check_prompt_assets.py` already holds their manifests. Nothing reads
-the frontmatter here: `scripts/generate_docs.py` builds the published skill
-catalogue from `agents/platform/skills` and `agents/cluster/skills` alone, so
-these blocks reach no generated page and this suite is their only reader
-inside the repository.
+`scripts/check_prompt_assets.py` already holds their manifests -- though with
+a line-scanning reader rather than a YAML one, so the loadability check below
+has no counterpart on the skills that ship. Closing that is a change to a gate
+covering fifty-odd bundles and turns on whether Hermes rejects the same block,
+which needs a running image to answer; it is not this suite's to make.
+Nothing reads the frontmatter here: `scripts/generate_docs.py` builds the
+published skill catalogue from `agents/platform/skills` and
+`agents/cluster/skills` alone, so these blocks reach no generated page and
+this suite is their only reader inside the repository.
 """
 
 import os
@@ -78,11 +92,12 @@ CLAUDE_LINKS = {
     ".claude/rules": ".agents/rules",
 }
 
-#: The action verb each lifecycle skill's description has to open with. Held as
-#: the first word rather than as a substring anywhere, for two reasons: a
-#: description that leads with the action is the one that matches how a request
-#: is phrased, and "install" is a substring of "uninstall", so the looser check
-#: lets either skill stand in for the other.
+#: The action verb each lifecycle skill's description has to open with, matched
+#: as a prefix of the first word. Held at the opening rather than as a
+#: substring anywhere, for two reasons: a description that leads with the
+#: action is the one that matches how a request is phrased, and "install" is a
+#: substring of "uninstall", so the looser check lets either skill stand in for
+#: the other.
 LIFECYCLE_ACTIONS = {
     "install-kube-agents": "install",
     "uninstall-kube-agents": "uninstall",
@@ -113,8 +128,17 @@ def _frontmatter(skill_md):
 
 
 def _description(skill_md):
+    """The description, and why there is none when there is none.
+
+    The reason travels with the text because the classes below sort after
+    `SkillFrontmatterTest` only by accident of naming: without it, a skill
+    whose frontmatter does not parse is first reported as a description
+    opening with the wrong word, which points the reader at the wrong line.
+    """
     block, why = _frontmatter(skill_md)
-    return "" if block is None else str(block.get("description", ""))
+    if block is None:
+        return "", why
+    return str(block.get("description", "")), ""
 
 
 class ClaudeSkillLinksTest(unittest.TestCase):
@@ -166,11 +190,13 @@ class SkillFrontmatterTest(unittest.TestCase):
     def test_every_skill_declares_a_description(self):
         for skill in _skill_dirs():
             with self.subTest(skill=skill.name):
+                description, why = _description(skill / "SKILL.md")
                 self.assertTrue(
-                    _description(skill / "SKILL.md").strip(),
-                    "the description is the only part of a skill loaded before "
-                    "it is chosen; without one the skill is present and "
-                    "unreachable",
+                    description.strip(),
+                    why
+                    or "the description is the only part of a skill loaded "
+                    "before it is chosen; without one the skill is present "
+                    "and unreachable",
                 )
 
 
@@ -186,23 +212,30 @@ class LifecycleSkillDiscoverabilityTest(unittest.TestCase):
     def test_lifecycle_descriptions_open_with_the_action_a_user_asks_for(self):
         for name, action in LIFECYCLE_ACTIONS.items():
             with self.subTest(skill=name):
-                description = _description(SKILLS_DIR / name / "SKILL.md")
+                description, why = _description(SKILLS_DIR / name / "SKILL.md")
                 opening = description.split(" ", 1)[0].strip(",.:;").lower()
-                self.assertEqual(
-                    opening,
-                    action,
-                    f"{name}'s description opens with {opening!r} rather than "
-                    f"{action!r}; a request to {action} kube-agents is matched "
-                    "against this sentence and nothing else",
+                # A prefix, so the third-person form the rest of this
+                # directory is written in ("Installs kube-agents…") passes.
+                # It still separates the pair that motivated the check:
+                # neither "install" nor "installs" is a prefix of "uninstall",
+                # and "uninstall" is not a prefix of "install".
+                self.assertTrue(
+                    opening.startswith(action),
+                    why
+                    or f"{name}'s description opens with {opening!r} rather "
+                    f"than {action!r}; a request to {action} kube-agents is "
+                    "matched against this sentence and nothing else",
                 )
 
     def test_lifecycle_descriptions_name_the_product(self):
         for name in LIFECYCLE_ACTIONS:
             with self.subTest(skill=name):
+                description, why = _description(SKILLS_DIR / name / "SKILL.md")
                 self.assertIn(
                     PRODUCT,
-                    _description(SKILLS_DIR / name / "SKILL.md").lower(),
-                    f"{name}'s description does not name {PRODUCT}, so a "
+                    description.lower(),
+                    why
+                    or f"{name}'s description does not name {PRODUCT}, so a "
                     "request that calls the product by that name has nothing "
                     "to match",
                 )

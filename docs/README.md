@@ -21,7 +21,8 @@ them. `.agents/rules/` is the one the canonical-home table in `AGENTS.md`
 points at, so a rule's home is found through that table rather than through
 this map. `.claude/skills` and `.claude/rules` are relative symlinks into
 `.agents/`, not copies, so Claude Code reads the same files every other
-harness does; `tests/test_agent_discovery_hooks.py` holds them to that.
+harness does; [`tests/test_skill_discovery.py`](../tests/test_skill_discovery.py)
+holds them to that.
 
 This file states **no document counts**, anywhere — not a repository total, not
 a per-directory total, not a per-family total. A count is a number every
@@ -179,6 +180,7 @@ identifier appears, add its source here.
 | The operator RBAC self-check: the `RBACIncomplete` reason, its re-check interval and condition message; the floating tags `make deploy` refuses and `ALLOW_MUTABLE_IMG` | `k8s-operator/internal/controller/rbac_selfcheck.go`; `k8s-operator/Makefile` |
 | `make` targets | the root `Makefile` and `k8s-operator/Makefile` |
 | The third-party download retry rule: which files are walked and what flags a curl line must carry | `DOWNLOAD_SOURCES`, `RETRY_COUNT` and `RETRY_ALL_ERRORS` in `tests/test_third_party_download_retry.py` |
+| Harness discovery of this repository's own skills: the `.claude/*` symlink targets, and the floor a lifecycle skill's description must clear | `CLAUDE_LINKS`, `LIFECYCLE_ACTIONS` and `PRODUCT` in `tests/test_skill_discovery.py` |
 | The GitHub environment variables an install is configured from, which install.env key each becomes, and which are required to reconcile a long-lived environment | `MAPPING`, `REQUIRED_ALWAYS` and `REQUIRED_STRICT` in `scripts/release/render_install_env.sh` |
 | Paths baked into the agent image (`/opt/defaults/...`) | `deploy/docker/Dockerfile` |
 | The maintainers' CI project IDs, which `docs-check-audience` forbids on the site | `hack/ci-env.sh` (the `PROJECT_ID` export) |
