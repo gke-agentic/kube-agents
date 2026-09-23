@@ -4210,7 +4210,23 @@ main() {
     # endpoint, so print the resolved flag rather than a literal one. Resolved
     # up here because it can warn on stderr, which would otherwise split the
     # block below.
-    gke_dns_endpoint_flag "$cluster_name" "$region" "$project_id"
+    #
+    # This is step 6 of the interview and the apply that creates the cluster is
+    # step 12, so on a fresh install -- and on every --dry-run and
+    # --generate-only run -- there is nothing to describe yet. That is not a
+    # failure: the helper leaves GKE_DNS_ENDPOINT_FLAG empty and the command
+    # below prints without --dns-endpoint, which is the only command there is
+    # anything to print before the cluster exists. The copy in the completion
+    # banner runs after the apply and resolves the real flag.
+    #
+    # What keeps that miss silent is `trap - ERR` inside the helper's own
+    # describe, not the guard here: bash 3.2 runs the inherited ERR trap in the
+    # substitution's subshell, which nothing on this line can reach. The guard
+    # covers the other half -- a non-zero return from the helper -- and matches
+    # the two get-credentials sites further down. The reset keeps the variable
+    # defined whatever the helper does.
+    GKE_DNS_ENDPOINT_FLAG=""
+    gke_dns_endpoint_flag "$cluster_name" "$region" "$project_id" || true
 
     echo ""
     echo -e "${C_CYAN}${C_BOLD}--- [Talking to the Agent from a Terminal] ---${C_RESET}"
