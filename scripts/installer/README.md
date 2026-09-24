@@ -121,12 +121,13 @@ its own variables rather than keeping install state on an ephemeral runner.
 
 Which file that is, for a front door that has to go and find one: `KUBE_AGENTS_INSTALL_ENV`
 first, then the checkout the run's own sources came from, then the working directory,
-and last the install checkout in `$HOME/kube-agents`. `upgrade.sh` and `uninstall.sh` reach
-that last candidate on the path the release-pinned one-liner takes — it has no checkout of
-its own, so the installer's is where the install's configuration is — and it is last rather
-than first so that a workstation managing two installs acts on the one whose directory the
-operator is standing in, not whichever one that shared checkout belongs to. The one exception
-is `uninstall.sh --source-ref`: because that handover exists to tear down an older release
+and last — for `uninstall.sh`, or for `install.sh` and `upgrade.sh` when run from outside a
+checkout (such as the release-pinned one-liner, which has no checkout of its own) — the install
+checkout in `$HOME/kube-agents`. A checkout run of `install.sh` or `upgrade.sh` never falls
+through to `$HOME/kube-agents`, and on a piped run `$HOME/kube-agents` is last rather than first
+so that a workstation managing two installs acts on the one whose directory the operator is
+standing in, not whichever one that shared checkout belongs to. The one exception on
+`uninstall.sh` is `--source-ref`: because that handover exists to tear down an older release
 (and pre-`0.4.0` installs wrote no `install.env`), a file found only at
 `$HOME/kube-agents/install.env` is skipped unless all three of `--gcp-project-id`,
 `--gke-cluster-name`, and `--gcp-region` are given on the command line and match it.

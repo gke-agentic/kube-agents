@@ -132,17 +132,17 @@ build_date=YYYY-MM-DDTHH:MM:SSZ
 
 The `commit` field records the SHA of the tagged release commit (the single-parent stamped commit created on detached HEAD parented by the candidate commit).
 
-When `install.sh` or `upgrade.sh` executes from an unversioned directory outside Git, `verify_local_source_ref` verifies source integrity against the release metadata:
+When `install.sh` or `upgrade.sh` executes from an unversioned directory outside Git, `verify_local_source_ref` verifies source integrity in two steps:
 
-1. If `.release-bundle` is present with matching `version` or `tag` (and, for `install.sh`, matching `BAKED_RELEASE_VERSION`), it attributes the source directory to the official release bundle and logs:
+1. If `.release-bundle` is present with matching `version` or `tag`, and the `BAKED_RELEASE_VERSION` stamped into the running script matches the requested release, it attributes the source directory to the official release bundle and logs:
 
 ```text
 ✓ Verified install sources match official release bundle <VERSION>.
 ```
 
-(or `✓ Verified upgrade sources match official release bundle <VERSION>.` during upgrades; if `.release-bundle` records a different release, both scripts refuse).
+(or `✓ Verified upgrade sources match official release bundle <VERSION>.` during upgrades). If the marker, or the version stamped into the tree's own root scripts, names a different release, `upgrade.sh` refuses; `install.sh` does not yet make that check.
 
-2. If `.release-bundle` is absent, `install.sh` accepts a matching `BAKED_RELEASE_VERSION` stamped into the script, whereas `upgrade.sh` requires either a Git worktree at the target tag or `.release-bundle` (unless `--allow-unverified-source` is passed).
+2. If `.release-bundle` is absent, both scripts accept a matching `BAKED_RELEASE_VERSION` stamped into the script and report matching the baked release. With no stamp, `install.sh` refuses unless `--allow-unverified-source` is passed, and `upgrade.sh` refuses (a `--dry-run` preview warns and continues).
 
 ### Verifying release bundle integrity and provenance
 

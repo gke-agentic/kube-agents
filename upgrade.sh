@@ -884,10 +884,6 @@ resolve_install_env_file() {
     echo "${install_checkout}/install.env"
     return 0
   fi
-  if [ -n "${HOME:-}" ] && [ -f "${HOME}/kube-agents/install.env" ]; then
-    echo "${HOME}/kube-agents/install.env"
-    return 0
-  fi
   # Nothing exists yet. Naming the sources' own directory keeps the refusal
   # below pointing at the file the installer would have written.
   default_install_env_file "$repo_dir"

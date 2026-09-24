@@ -2170,19 +2170,19 @@ resolve_install_env_file "{repo_dir}" "{install_checkout}"
 
         self.assertEqual(resolved, str(base / "checkout" / "install.env"))
 
-    def test_a_checkout_run_without_its_own_install_env_still_reaches_the_home_install_checkout(self):
+    def test_a_checkout_run_without_its_own_install_env_does_not_reach_into_home(self):
         """Running `./upgrade.sh` from a fresh git clone or unpacked bundle leaves
-        `install_checkout` empty in `acquire_upgrade_sources`, because the run
-        already has local sources and did not need to adopt `$HOME/kube-agents`.
-        Step 4 of the documented lookup order (`$HOME/kube-agents/install.env`)
-        must still be reached when neither the clone nor `$(pwd)` has an
-        `install.env` of its own."""
+        `install_checkout` empty in `acquire_upgrade_sources`. Matching
+        `install.sh`'s `_resolve_repo_dir_for_state`, a checkout run with no
+        `install.env` of its own must return its own default path (and refuse in
+        `main()`) rather than loading a different install's configuration from
+        `$HOME/kube-agents/install.env`."""
         base = self._layout()
         (base / "home" / "kube-agents" / "install.env").write_text("")
 
         resolved = self._resolve(base / "sources", "", base / "cwd", home=base / "home")
 
-        self.assertEqual(resolved, str(base / "home" / "kube-agents" / "install.env"))
+        self.assertEqual(resolved, str(base / "sources" / "install.env"))
 
     def test_with_nothing_anywhere_it_names_the_sources_directory(self):
         """Nothing to load: the refusal that follows names where one would live."""
