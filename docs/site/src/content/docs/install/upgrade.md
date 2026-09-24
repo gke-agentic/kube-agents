@@ -26,10 +26,9 @@ The upgrade refuses to run without the install's own configuration, because a fu
 re-renders the `PlatformAgent` resource from it: a file written from memory re-renders the install
 with whatever it forgets. `KUBE_AGENTS_INSTALL_ENV` names the file outright, which is how an
 ephemeral CI runner supplies one. Otherwise the script looks for `install.env` in the checkout it
-is running from, then in the directory you run it from, and — when run from outside a checkout,
-such as the piped release one-liner — last in the install checkout the installer left in
-`$HOME/kube-agents`, so standing in one install's directory upgrades that install, not whichever
-one the checkout in `$HOME` belongs to.
+is running from, then in the directory you run it from, and last in the install checkout the
+installer left in `$HOME/kube-agents`, so standing in one install's directory upgrades that
+install, not whichever one the checkout in `$HOME` belongs to.
 
 `--upgrade-mode=full`, the default, additionally needs the `terraform` CLI on `PATH`.
 

@@ -132,16 +132,17 @@ build_date=YYYY-MM-DDTHH:MM:SSZ
 
 The `commit` field records the SHA of the tagged release commit (the single-parent stamped commit created on detached HEAD parented by the candidate commit).
 
-When `install.sh` or `upgrade.sh` executes from an unversioned directory outside Git, `verify_local_source_ref` verifies source integrity in two steps:
+When `install.sh` or `upgrade.sh` executes from an unversioned directory outside Git, `verify_local_source_ref` verifies source integrity against the release metadata:
 
-1. `BAKED_RELEASE_VERSION` stamped into the script must match the requested release ref (passed via `--image-tag`, defaulting to the script's own version).
-2. If `.release-bundle` is present with matching `version` or `tag`, it attributes the source directory to the official release bundle and logs:
+1. If `.release-bundle` is present with matching `version` or `tag` (and, for `install.sh`, matching `BAKED_RELEASE_VERSION`), it attributes the source directory to the official release bundle and logs:
 
 ```text
 ✓ Verified install sources match official release bundle <VERSION>.
 ```
 
-(or `✓ Verified upgrade sources match official release bundle <VERSION>.` during upgrades). If the marker is missing but `BAKED_RELEASE_VERSION` matches, it reports matching the baked release.
+(or `✓ Verified upgrade sources match official release bundle <VERSION>.` during upgrades; if `.release-bundle` records a different release, both scripts refuse).
+
+2. If `.release-bundle` is absent, `install.sh` accepts a matching `BAKED_RELEASE_VERSION` stamped into the script, whereas `upgrade.sh` requires either a Git worktree at the target tag or `.release-bundle` (unless `--allow-unverified-source` is passed).
 
 ### Verifying release bundle integrity and provenance
 

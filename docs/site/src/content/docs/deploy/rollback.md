@@ -248,11 +248,11 @@ checks before it renders or applies anything, so the release itself keeps its la
 - **The sources do not match the tag.** The checkout's `HEAD` is not the tag's commit, the tree
   has uncommitted changes, or the bundle's baked version is not the `--image-tag` given. Start
   again from a clean checkout or bundle of `N-1`.
-- **No install configuration.** Neither `install.env` beside the script nor
-  `KUBE_AGENTS_INSTALL_ENV` was found — or `KUBE_AGENTS_INSTALL_ENV` names a file that is not
-  there, which is reported by that path rather than searched past. Supply the
-  install's own file; a fresh one written from memory re-renders the `PlatformAgent` with whatever
-  it forgets.
+- **No install configuration.** No `install.env` was found in `KUBE_AGENTS_INSTALL_ENV`, the
+  checkout the script runs from, the working directory, or `$HOME/kube-agents` — or
+  `KUBE_AGENTS_INSTALL_ENV` names a file that is not there, which is reported by that path rather
+  than searched past. Supply the install's own file; a fresh one written from memory re-renders the
+  `PlatformAgent` with whatever it forgets.
 - **The memory store cannot be checked and the configuration does not name one.** A rollback runs
   `upgrade.sh`, and its `terraform.tfvars` is regenerated in every mode, so an `install.env` with
   no `MEMORY` line makes the run ask the cluster whether it is running Hindsight rather than
