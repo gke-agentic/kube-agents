@@ -726,13 +726,21 @@ Consequences:
 - `gcloud container clusters get-credentials` runs against an isolated scratch
   kubeconfig, and the result is filed under the context it names. It never writes
   the broker's own base kubeconfig. That base file is where a `kubectl` naming no
-  kubeconfig resolves, and `bootstrap` sets its `current-context` — and its
+  cluster resolves, and `bootstrap` sets its `current-context` — and its
   default namespace — to the host cluster once at startup. Leaving it alone is
   what keeps a context-less `kubectl` on the host cluster instead of following
-  whichever cluster was fetched last. Selecting a different cluster is done by
-  pointing `KUBECONFIG` at a per-target file, which is the pin the broker reads;
-  a bare `--context` is passed through to `kubectl` and will not find a context
-  the file it was handed does not contain.
+  whichever cluster was fetched last, pod-wide. A caller names a different
+  cluster in one of three ways, all resolved by the sandbox's shim
+  (`credential_proxy_client.py`) to the context name the broker regenerates from:
+  `KUBECONFIG` or `--kubeconfig` pointing at a per-target file, which keep
+  precedence; a `--context` that is a GKE context name, forwarded as that name;
+  or, inside a kanban card only, nothing at all — a context-less `kubectl` there
+  follows the card's own last context-less `get-credentials`, as `gcloud` would
+  on a workstation, and the pin is keyed by the card's task id so it never
+  becomes another card's or the pod's default. A context-less `get-credentials`
+  also asks for its file back and lands it at
+  `$HERMES_HOME/.kubeconfigs/kubeconfig_<project>_<cluster>_<location>.yaml`,
+  printing the `export KUBECONFIG=` and `--context` lines that reach it.
 - Proxied `kubectl` reads get `--request-timeout=30s` and a 60-second deadline,
   so an unreachable control plane fails in seconds rather than holding a broker
   worker for `kubectl`'s 300-second client default. Commands that are meant to

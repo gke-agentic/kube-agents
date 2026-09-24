@@ -213,9 +213,213 @@ class TestGetCredentialsWritesTheFileOnThisSide(SubmittedPayloadTestCase):
         self.run_it(self.ARGV, {"KUBECONFIG": str(self.destination)})
         self.assertEqual(self.destination.read_text(encoding="utf-8"), self.GENERATED)
 
-    def test_no_destination_asks_for_nothing_back(self):
-        captured = self.send(self.ARGV, {"KUBECONFIG": ""})
-        self.assertNotIn("wantsKubeconfig", captured["payload"])
+    def test_no_destination_still_asks_for_the_file_back(self):
+        # Before #1968 nothing came back, and the context-less kubectl that
+        # followed read the host cluster (#1852's default) and reported a
+        # seeded fixture absent.
+        home = self.directory / "home"
+        captured = self.run_it(self.ARGV, {"KUBECONFIG": "", "HERMES_HOME": str(home)})
+        self.assertTrue(captured["payload"]["wantsKubeconfig"])
+
+
+# A second GKE cluster, standing in for a seeded fleet member.
+SEEDED_CONTEXT = "gke_acme-evals_us-central1-a_seeded-a"
+SEEDED_KUBECONFIG = f"apiVersion: v1\nkind: Config\ncurrent-context: {SEEDED_CONTEXT}\n"
+CARD = "t_0123abcd"
+
+
+class ContextLessTestCase(SubmittedPayloadTestCase):
+    """A shell with no KUBECONFIG, as the platform profile's is (#1968)."""
+
+    GET_CREDENTIALS = [
+        "gcloud", "container", "clusters", "get-credentials", "seeded-a",
+        "--location", "us-central1-a",
+    ]
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+        self.expected_file = (
+            self.home / ".kubeconfigs" / "kubeconfig_acme-evals_seeded-a_us-central1-a.yaml"
+        )
+
+    def environ(self, **extra):
+        base = {"KUBECONFIG": "", "HERMES_HOME": str(self.home), "HERMES_KANBAN_TASK": ""}
+        base.update(extra)
+        return base
+
+    def fetch(self, environ):
+        """Run get-credentials and return (captured, stderr text)."""
+        stderr = io.StringIO()
+        captured = {}
+
+        def fake_open(request, *args, **kwargs):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            body = {"exitCode": 0, "kubeconfig": SEEDED_KUBECONFIG}
+            return RecordingResponse(json.dumps(body).encode("utf-8"))
+
+        with patch.dict("os.environ", environ, clear=False):
+            with patch.object(credential_proxy_client, "open_broker_request", fake_open):
+                with patch("sys.stdout", new=io.StringIO()), patch("sys.stderr", new=stderr):
+                    captured["exit_code"] = credential_proxy_client.execute(
+                        self.LOCAL_ENDPOINT, list(self.GET_CREDENTIALS)
+                    )
+        return captured, stderr.getvalue()
+
+
+class TestAContextLessGetCredentialsLandsAFile(ContextLessTestCase):
+    """The minimal half: the file lands where AGENTS.md says, and the shell is told."""
+
+    def test_the_file_lands_at_the_per_target_path(self):
+        captured, _ = self.fetch(self.environ())
+        self.assertEqual(0, captured["exit_code"])
+        self.assertEqual(SEEDED_KUBECONFIG, self.expected_file.read_text(encoding="utf-8"))
+
+    def test_the_path_matches_the_mcp_servers_convention(self):
+        # _thread_kubeconfig_path owns the name; the two must not drift.
+        target = credential_proxy_client.parse_gke_context(SEEDED_CONTEXT)
+        with patch.dict("os.environ", {"HERMES_HOME": str(self.home)}, clear=False):
+            path = credential_proxy_client.per_target_kubeconfig_path(target)
+        self.assertEqual(self.expected_file, path)
+
+    def test_outside_a_card_it_says_the_host_is_still_the_default_and_how_to_move(self):
+        _, stderr = self.fetch(self.environ())
+        self.assertIn("still reads the host cluster", stderr)
+        self.assertIn(f"export KUBECONFIG={self.expected_file}", stderr)
+        self.assertIn(f"kubectl --context={SEEDED_CONTEXT}", stderr)
+
+    def test_the_exported_file_then_reaches_the_cluster(self):
+        # The instruction it prints has to work: the file resolves through the
+        # existing KUBECONFIG path to the fetched cluster's name.
+        self.fetch(self.environ())
+        payload = self.submit(
+            ["kubectl", "get", "clusterrolebinding"],
+            self.environ(KUBECONFIG=str(self.expected_file)),
+        )
+        self.assertEqual(SEEDED_CONTEXT, payload["kubeconfigContext"])
+
+    def test_an_unwritable_home_does_not_fail_the_command(self):
+        # gcloud succeeded, and --context still reaches the cluster.
+        blocker = self.home / "not-a-directory"
+        blocker.write_text("", encoding="utf-8")
+        captured, stderr = self.fetch(self.environ(HERMES_HOME=str(blocker)))
+        self.assertEqual(0, captured["exit_code"])
+        self.assertIn("could not write", stderr)
+        self.assertIn(f"kubectl --context={SEEDED_CONTEXT}", stderr)
+        self.assertNotIn("export KUBECONFIG", stderr)
+
+    def test_an_explicit_destination_is_unchanged(self):
+        destination = self.home / "mine.yaml"
+        self.fetch(self.environ(KUBECONFIG=str(destination)))
+        self.assertTrue(destination.is_file())
+        self.assertFalse(self.expected_file.exists())
+
+
+class TestKubectlContextFlagNamesTheCluster(ContextLessTestCase):
+    """`--context` used to end in "context was not found" (#1968, step 37)."""
+
+    def test_a_gke_context_flag_is_forwarded_as_the_cluster_name(self):
+        for argv in (
+            ["kubectl", "get", "crb", "--context", SEEDED_CONTEXT],
+            ["kubectl", f"--context={SEEDED_CONTEXT}", "get", "crb"],
+        ):
+            with self.subTest(argv=argv):
+                payload = self.submit(argv, self.environ())
+                self.assertEqual(SEEDED_CONTEXT, payload["kubeconfigContext"])
+                # The flag itself stays: the generated file's one context is it.
+                self.assertIn(SEEDED_CONTEXT, " ".join(payload["argv"]))
+
+    def test_a_non_gke_context_is_left_to_kubectl(self):
+        payload = self.submit(["kubectl", "--context", "minikube", "get", "pods"], self.environ())
+        self.assertNotIn("kubeconfigContext", payload)
+
+    def test_words_after_the_separator_are_not_kubectls(self):
+        argv = ["kubectl", "exec", "pod/x", "--", "tool", "--context", SEEDED_CONTEXT]
+        payload = self.submit(argv, self.environ())
+        self.assertNotIn("kubeconfigContext", payload)
+
+    def test_kubeconfig_keeps_precedence(self):
+        # A Cluster Agent's pin is never overridden from here.
+        pinned = write_kubeconfig(self.home)
+        payload = self.submit(
+            ["kubectl", "--context", SEEDED_CONTEXT, "get", "pods"],
+            self.environ(KUBECONFIG=str(pinned)),
+        )
+        self.assertEqual(GKE_CONTEXT, payload["kubeconfigContext"])
+
+    def test_gcloud_is_not_given_a_context(self):
+        payload = self.submit(
+            ["gcloud", "container", "clusters", "list", "--context", SEEDED_CONTEXT],
+            self.environ(),
+        )
+        self.assertNotIn("kubeconfigContext", payload)
+
+
+class TestAKanbanCardFollowsItsOwnGetCredentials(ContextLessTestCase):
+    """The complete half: gcloud's "just fetched is current", for one card only."""
+
+    def test_the_same_line_kubectl_reaches_the_fetched_cluster(self):
+        # `get-credentials seeded-a && kubectl get crb debug-binding`, the
+        # exact shape every #1838 rep ran.
+        _, stderr = self.fetch(self.environ(HERMES_KANBAN_TASK=CARD))
+        self.assertIn(f"now reads {SEEDED_CONTEXT}", stderr)
+        payload = self.submit(
+            ["kubectl", "get", "clusterrolebinding", "debug-binding"],
+            self.environ(HERMES_KANBAN_TASK=CARD),
+        )
+        self.assertEqual(SEEDED_CONTEXT, payload["kubeconfigContext"])
+
+    def test_outside_the_card_the_host_stays_the_default(self):
+        # #1799: the default must not drift pod-wide with the last fetch.
+        self.fetch(self.environ(HERMES_KANBAN_TASK=CARD))
+        for task in ("", "t_ffff0000"):
+            with self.subTest(task=task):
+                payload = self.submit(
+                    ["kubectl", "get", "pods"], self.environ(HERMES_KANBAN_TASK=task)
+                )
+                self.assertNotIn("kubeconfigContext", payload)
+
+    def test_no_card_means_no_pin_is_written(self):
+        self.fetch(self.environ())
+        self.assertFalse((self.home / ".kubeconfigs" / "cards").exists())
+
+    def test_an_explicit_context_beats_the_pin(self):
+        self.fetch(self.environ(HERMES_KANBAN_TASK=CARD))
+        payload = self.submit(
+            ["kubectl", "--context", GKE_CONTEXT, "get", "pods"],
+            self.environ(HERMES_KANBAN_TASK=CARD),
+        )
+        self.assertEqual(GKE_CONTEXT, payload["kubeconfigContext"])
+
+    def test_an_explicit_destination_records_no_pin(self):
+        # gcloud leaves the default kubeconfig alone when told to write
+        # elsewhere, and so does this.
+        destination = self.home / "mine.yaml"
+        self.fetch(self.environ(HERMES_KANBAN_TASK=CARD, KUBECONFIG=str(destination)))
+        payload = self.submit(
+            ["kubectl", "get", "pods"], self.environ(HERMES_KANBAN_TASK=CARD)
+        )
+        self.assertNotIn("kubeconfigContext", payload)
+
+    def test_a_pin_that_is_not_a_gke_name_is_ignored(self):
+        # The file is the agent's to write; it only ever crosses as a name the
+        # grammar accepts.
+        cards = self.home / ".kubeconfigs" / "cards"
+        cards.mkdir(parents=True)
+        for content in ("minikube", "gke_../x_y_z", SEEDED_CONTEXT + "x" * 600):
+            with self.subTest(content=content[:20]):
+                (cards / f"{CARD}.context").write_text(content, encoding="utf-8")
+                payload = self.submit(
+                    ["kubectl", "get", "pods"], self.environ(HERMES_KANBAN_TASK=CARD)
+                )
+                self.assertNotIn("kubeconfigContext", payload)
+
+    def test_a_task_id_that_is_not_one_is_not_a_card(self):
+        # The id becomes a filename, so it is held to the dispatcher's grammar.
+        for task in ("../escape", "t_XYZ", "t_12/34"):
+            with self.subTest(task=task):
+                with patch.dict("os.environ", {"HERMES_KANBAN_TASK": task}, clear=False):
+                    self.assertIsNone(credential_proxy_client.kanban_task())
 
 
 class TestContextGrammar(unittest.TestCase):
