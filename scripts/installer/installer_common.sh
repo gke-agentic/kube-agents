@@ -61,10 +61,11 @@ fi
 # flag is the command that ran before the helper existed, and it still reaches
 # every cluster with a routable IP endpoint. The defaults above refuse because
 # they decide what gets installed; this only picks an endpoint to dial, and an
-# uninstall is not worth stopping over it.
+# uninstall or upgrade is not worth stopping over it.
 #
-# uninstall.sh is the only front door that reaches the stub — common.sh and
-# install.sh source the helper unguarded and would already have stopped on the
+# uninstall.sh and upgrade.sh reach the stub: both source this file before
+# anything else loads the helper. install.sh does not — common.sh sources the
+# helper unguarded ahead of this file and would already have stopped on the
 # same missing file. It says so rather than falling back in silence, because
 # the next thing that caller sees is an unrelated-looking missing key.
 _gke_dns_endpoint_helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gke_dns_endpoint.sh"
