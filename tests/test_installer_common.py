@@ -1107,6 +1107,47 @@ class InstallerCommonTest(unittest.TestCase):
             self.assertIn("rc=0", proc.stdout, proc.stderr)
             self.assertIn('memory_provider          = "multiuser_memory"', dest.read_text())
 
+    def test_memory_probe_fetches_credentials_for_a_terraform_managed_cluster(self):
+        """The `get-credentials` gate in write_tfvars_from_state is `cluster_exists = "true"`,
+        not `create_cluster = "false"`.
+
+        On a Terraform-managed cluster (`gcloud_stdout=MANAGED_CLUSTER_STATE`,
+        so `create_cluster = "true"` and `cluster_exists = "true"`), an
+        adoption-only gate (`create_cluster = "false"`) skips `get-credentials`
+        and leaves `live_hindsight_state` without a kubeconfig context for the
+        cluster it needs to probe. Here `kubectl config current-context` only
+        reports the cluster's context after `gcloud container clusters
+        get-credentials` has actually run.
+        """
+        with tempfile.TemporaryDirectory() as out_dir:
+            dest = pathlib.Path(out_dir) / "terraform.tfvars"
+            cred_marker = pathlib.Path(out_dir) / "credentials.fetched"
+            extra_cases = (
+                f'  *"get-credentials --help"*) exit 0 ;;\n'
+                f'  *"get-credentials"*) : > "{cred_marker}"; exit 0 ;;\n'
+            )
+            kubectl_requiring_get_credentials = (
+                "#!/usr/bin/env bash\n"
+                'case "$*" in\n'
+                f'  *"current-context"*) [ -f "{cred_marker}" ] && echo "{self._THIS_CLUSTERS_CONTEXT}"; exit 0 ;;\n'
+                '  *"statefulset hindsight-postgresql"*) echo "statefulset.apps/hindsight-postgresql"; exit 0 ;;\n'
+                "esac\n"
+                "exit 1\n"
+            )
+            proc = self._run(
+                f'rc=0; write_tfvars_from_state "{dest}" || rc=$?; echo "rc=$rc"',
+                env={"API_SERVER_KEY": "k", "KUBE_AGENTS_REQUIRE_MEMORY_ANSWER": "true"},
+                gcloud_stdout=MANAGED_CLUSTER_STATE,
+                describe_stub="printf 'True\\n'; exit 0",
+                gcloud_extra_cases=extra_cases,
+                kubectl_script=kubectl_requiring_get_credentials,
+            )
+            self.assertIn("rc=0", proc.stdout, proc.stderr)
+            self.assertTrue(cred_marker.exists(), "get-credentials was not called for a Terraform-managed cluster")
+            tfvars = dest.read_text()
+            self.assertIn("create_cluster             = true", tfvars)
+            self.assertIn('memory_provider          = "kube_agents_memory"', tfvars)
+
     def test_the_generators_credentials_fetch_asks_for_the_dns_endpoint(self):
         """Without --dns-endpoint the fetch fails on a DNS-endpoint-only
         cluster, the context gate misses, and every check that gate protects is

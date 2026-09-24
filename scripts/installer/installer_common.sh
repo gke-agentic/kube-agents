@@ -1745,7 +1745,7 @@ write_tfvars_from_state() {
           # caller to the flag sends half of them to a second, worse error.
           # Recording MEMORY works everywhere and is named first for that
           # reason; MEMORY=… in the environment is the single-run form.
-          print_info "State the answer instead: record MEMORY=hindsight|file|off in the install's install.env (install.sh also takes --memory=, and MEMORY=… in the environment answers for one run). Or restore access to the cluster (gcloud container clusters get-credentials ${CLUSTER_NAME} --location ${REGION} --project ${PROJECT_ID}) and re-run."
+          print_info "State the answer instead: record MEMORY=hindsight|file|off in the install's install.env (install.sh also takes --memory=, and MEMORY=… in the environment answers for one run). Or restore access to the cluster (gcloud container clusters get-credentials ${CLUSTER_NAME} --location ${REGION} --project ${PROJECT_ID}${GKE_DNS_ENDPOINT_FLAG:+ $GKE_DNS_ENDPOINT_FLAG}) and re-run."
           return 1
         fi
 

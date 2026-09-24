@@ -6788,6 +6788,53 @@ class ToggleValuesAreValidatedTest(unittest.TestCase):
         # Not "[]": the empty assignment reaches main() as a well-formed
         # "false", which is what makes it silent.
         self.assertIn("RESOLVED=[false]", proc.stdout)
+
+    def test_an_empty_memory_value_is_refused_against_a_seed(self):
+        """`--memory=` out of a wrapper expanding an unset variable must fail at parse_args.
+
+        Without the parse-time check, `--memory=` sets PARAM_MEMORY="" AND
+        PARAM_MEMORY_EXPLICIT="true", and resolve_shared_defaults then turns ""
+        into DEFAULT_MEMORY ("file") before main()'s validator runs -- both
+        overwriting a recorded MEMORY=hindsight and telling
+        write_tfvars_from_state not to probe the live cluster before planning
+        hindsight-postgresql away.
+        """
+        proc = self._parse_args("--memory=", MEMORY="hindsight")
+        self.assertNotIn("PASSED", proc.stdout)
+        self.assertIn(
+            "--memory= was given an empty value",
+            proc.stdout + proc.stderr,
+        )
+
+    def test_an_empty_memory_value_would_resolve_to_the_default_with_explicit_true(self):
+        """Why the refusal above must live in parse_args and not wait for main().
+
+        Driven through resolve_shared_defaults with PARAM_MEMORY="" and
+        PARAM_MEMORY_EXPLICIT="true": `${PARAM_MEMORY:-$DEFAULT_MEMORY}` turns
+        the empty string into "file", which main()'s validator accepts while
+        PARAM_MEMORY_EXPLICIT stays "true".
+        """
+        script = (
+            f'KUBE_AGENTS_SOURCE_ONLY=true source "{_INSTALL_SH}"\n'
+            f'source "{_REPO_ROOT}/scripts/installer/installer_common.sh"\n'
+            'PARAM_MEMORY=""\n'
+            'PARAM_MEMORY_EXPLICIT="true"\n'
+            "resolve_shared_defaults\n"
+            'echo "RESOLVED=[$PARAM_MEMORY] EXPLICIT=[$PARAM_MEMORY_EXPLICIT]"\n'
+        )
+        env = get_isolated_test_env()
+        env["MEMORY"] = "hindsight"
+        proc = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(_REPO_ROOT),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("RESOLVED=[file] EXPLICIT=[true]", proc.stdout)
+
+
 class InstallerHelpersDetachFromTheTerminalTest(PtyChildTestMixin, unittest.TestCase):
     """The helpers that run install.sh functions must not hand them a terminal.
 

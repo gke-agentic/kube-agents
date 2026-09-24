@@ -324,6 +324,7 @@ resolve_uninstall_env_file() {
 handoff_env_names_another_install() {
   local env_file="$1"
   (
+    unset PROJECT_ID CLUSTER_NAME REGION NAMESPACE
     set -a
     # shellcheck disable=SC1090
     . "$env_file"
@@ -436,24 +437,31 @@ main() {
       [ "$handoff_env_file" = "${HOME}/kube-agents/install.env" ]; then
       handoff_env_is_a_guess="true"
     fi
-    # A guess is dropped outright once the flags name the install in full and
-    # it contradicts them, rather than loaded and then refused on the conflict
-    # below. That refusal offers three ways out and an install with no
-    # install.env anywhere has none of them: there is nothing to point
-    # KUBE_AGENTS_INSTALL_ENV at, its own checkout carries no file either so the
-    # lookup lands back here, and dropping the flags aims the teardown at the
-    # other install. Loading it is not harmless either -- `set -a` would hand
-    # the stranger's NAMESPACE, MEMORY, GITOPS_* and state-bucket keys to the
-    # release this arm execs. Nothing is lost by dropping it: the coordinates
-    # are on the command line, and --agent-namespace carries the one other key
-    # this arm forwards.
+    # A $HOME guess is never read unless the command-line coordinates confirm it.
+    # On a flagless --source-ref run, any file at $HOME/kube-agents/install.env
+    # was written by a >= 0.4.0 install (pre-Terraform releases wrote no
+    # install.env), so forwarding its coordinates aims the old uninstaller at
+    # the workstation's current install instead of the legacy one. And when all
+    # three coordinates ARE on the command line and contradict the guess,
+    # dropping it avoids the refusal below (which offers three ways out that an
+    # install with no install.env anywhere does not have) and keeps `set -a`
+    # from exporting the stranger's NAMESPACE, MEMORY, GITOPS_* and state-bucket
+    # keys into the child release.
     #
-    # All three coordinates, not any of them: a partly named install still
-    # leaves the child defaulting whatever was not passed, and the refusal is
-    # the better answer there. And only on a contradiction, so a guessed file
-    # that agrees is still read -- it is then almost certainly this install's,
-    # and it carries settings the flags do not.
+    # A partly named install (one or two coordinates) that disagrees with the
+    # guess still falls through to check_uninstall_coordinate_conflicts below,
+    # which refuses and tells the operator to pass all three coordinates. And a
+    # guess whose coordinates agree with the flags is still read, so its
+    # NAMESPACE and other settings travel with the confirmed target.
     if [ "$handoff_env_is_a_guess" = "true" ] &&
+      [ -z "$PARAM_PROJECT_ID" ] && [ -z "$PARAM_CLUSTER_NAME" ] && [ -z "$PARAM_REGION" ] &&
+      [ -f "$handoff_env_file" ]; then
+      print_warning "Not reading ${handoff_env_file}: --source-ref is for tearing down an older release, this file was found only by searching \$HOME, and no coordinate flags confirmed it belongs to the install being torn down."
+      print_warning "No coordinates are being forwarded either, so the '${PARAM_SOURCE_REF}' release will aim at its own defaults and gcloud's active project."
+      print_info "Pass --gcp-project-id, --gke-cluster-name and --gcp-region to name the install to tear down, or point KUBE_AGENTS_INSTALL_ENV at ${handoff_env_file} (or run from ${HOME}/kube-agents) if that file is the one you mean."
+      handoff_env_file=""
+      handoff_env_was_dropped="true"
+    elif [ "$handoff_env_is_a_guess" = "true" ] &&
       [ -n "$PARAM_PROJECT_ID" ] && [ -n "$PARAM_CLUSTER_NAME" ] && [ -n "$PARAM_REGION" ] &&
       [ -f "$handoff_env_file" ] && bash -n "$handoff_env_file" 2>/dev/null &&
       handoff_env_names_another_install "$handoff_env_file"; then

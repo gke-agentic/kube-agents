@@ -83,6 +83,7 @@ jobs:
             # having no access to the cluster; it clears the record so a later
             # step cannot inherit a context this run never obtained.
             container\ clusters\ get-credentials*)
+              case "$*" in *--help*) exit 0 ;; esac
               if [ "${STUB_NO_CREDENTIALS:-}" = "true" ]; then
                 rm -f "$RUNNER_TEMP/kube-agents-stub-context"
                 echo "ERROR: (gcloud.container.clusters.get-credentials) ResponseError: code=403, message=Required \"container.clusters.get\" permission." >&2

@@ -329,6 +329,7 @@ class SourceRefDispatchTest(unittest.TestCase):
         args,
         ref_speaks_domain_scoped=False,
         home_install_env=None,
+        cwd_install_env=None,
         install_env_var=None,
     ):
         """Run the real uninstall.sh with a stub git on PATH.
@@ -375,6 +376,8 @@ class SourceRefDispatchTest(unittest.TestCase):
             if home_install_env is not None:
                 (home_dir / "kube-agents").mkdir()
                 (home_dir / "kube-agents" / "install.env").write_text(home_install_env)
+            if cwd_install_env is not None:
+                (pathlib.Path(tmp) / "install.env").write_text(cwd_install_env)
             full_env = get_isolated_test_env(
                 overrides={
                     "DISPATCH_LOG": str(dispatch_log),
@@ -489,16 +492,56 @@ class SourceRefDispatchTest(unittest.TestCase):
         self.assertIn("carries no uninstall.sh", proc.stdout)
         self.assertIsNone(log)
 
-    def test_source_ref_forwards_coordinates_from_the_install_checkout(self):
-        """The documented `--source-ref` one-liner passes no coordinate flags,
-        and the cloned script's own repo_dir is a fresh temporary clone. The
-        wrapper resolves install.env from $HOME/kube-agents before handing over,
-        exports KUBE_AGENTS_INSTALL_ENV for the child, and forwards the
-        coordinates (including NAMESPACE) in the target release's flag dialect."""
+    def test_source_ref_forwards_coordinates_from_the_working_directory(self):
+        """When the operator runs `--source-ref` from a directory that carries
+        an `install.env` (or points `KUBE_AGENTS_INSTALL_ENV` at one), that file
+        is an instruction rather than a `$HOME` guess: the wrapper exports
+        KUBE_AGENTS_INSTALL_ENV for the child and forwards the coordinates
+        (including NAMESPACE) in the target release's flag dialect."""
         proc, log = self._run(
             ref_carries_uninstall=True,
             ref_speaks_domain_scoped=True,
             args=["--source-ref=v0.5.0", "--non-interactive"],
+            cwd_install_env=(
+                'PROJECT_ID="from-cwd"\n'
+                'CLUSTER_NAME="cwd-cluster"\n'
+                'REGION="europe-north1"\n'
+                'NAMESPACE="custom-agents-ns"\n'
+            ),
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIsNotNone(log, proc.stdout + proc.stderr)
+        tokens = log.split()
+        self.assertEqual(
+            tokens[:-1],
+            [
+                "--non-interactive",
+                "--gcp-project-id=from-cwd",
+                "--gke-cluster-name=cwd-cluster",
+                "--gcp-region=europe-north1",
+                "--agent-namespace=custom-agents-ns",
+            ],
+        )
+        self.assertTrue(
+            tokens[-1].endswith("/install.env")
+            and tokens[-1].startswith("ENV_FILE="),
+            f"expected exported KUBE_AGENTS_INSTALL_ENV in child environment, got {tokens[-1]}",
+        )
+
+    def test_source_ref_reads_home_install_env_when_coordinates_confirm_it(self):
+        """When `--source-ref` is given coordinate flags that match
+        `$HOME/kube-agents/install.env`, the `$HOME` guess is confirmed and its
+        non-coordinate settings (NAMESPACE) travel to the child."""
+        proc, log = self._run(
+            ref_carries_uninstall=True,
+            ref_speaks_domain_scoped=True,
+            args=[
+                "--source-ref=v0.5.0",
+                "--non-interactive",
+                "--gcp-project-id=from-home",
+                "--gke-cluster-name=home-cluster",
+                "--gcp-region=europe-north1",
+            ],
             home_install_env=(
                 'PROJECT_ID="from-home"\n'
                 'CLUSTER_NAME="home-cluster"\n'
@@ -524,6 +567,37 @@ class SourceRefDispatchTest(unittest.TestCase):
             and tokens[-1].startswith("ENV_FILE="),
             f"expected exported KUBE_AGENTS_INSTALL_ENV in child environment, got {tokens[-1]}",
         )
+
+    def test_a_stranger_in_home_is_not_forwarded_on_a_flagless_source_ref_run(self):
+        """A flagless `--source-ref` run outside a checkout must not aim the
+        legacy uninstaller at `$HOME/kube-agents/install.env`.
+
+        `install.env` was introduced in `0.4.0` alongside the Terraform
+        lifecycle engine, so any file sitting at `$HOME/kube-agents/install.env`
+        belongs to a `>= 0.4.0` install rather than to the pre-Terraform
+        install `--source-ref` is being run to tear down. Without CLI flags
+        confirming those coordinates, forwarding `$HOME/kube-agents/install.env`
+        would aim the old `uninstall.sh` at the workstation's current install.
+        """
+        proc, log = self._run(
+            ref_carries_uninstall=True,
+            ref_speaks_domain_scoped=True,
+            args=["--source-ref=v0.3.0", "--non-interactive"],
+            home_install_env=(
+                'PROJECT_ID="project-a"\n'
+                'CLUSTER_NAME="install-a"\n'
+                'REGION="us-east1"\n'
+                'NAMESPACE="install-a-ns"\n'
+            ),
+        )
+        combined = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 0, combined)
+        self.assertIn("Not reading", combined)
+        self.assertIn("found only by searching $HOME", combined)
+        self.assertIn("No coordinates are being forwarded either", combined)
+        self.assertNotIn("No install configuration (install.env) was found", combined)
+        self.assertIsNotNone(log, combined)
+        self.assertEqual(log.split(), ["--non-interactive"])
 
     def test_source_ref_refuses_when_flags_disagree_with_the_install_checkout(self):
         """A `--source-ref` run that loads install A's configuration while its

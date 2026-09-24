@@ -106,16 +106,21 @@ SOURCES_ADOPTED_CHECKOUT="false"
 # and charts out of it, so the second would apply a composition assembled from
 # whichever revision the first had it on at the time.
 #
-# Its own lock file, not the installer's: these are different operations, and
-# an install that waited on an upgrade's lock would be a new way to be stuck.
+# Same lock file as install.sh: both front doors adopt and move the one
+# checkout in $HOME/kube-agents (refresh_existing_clone detaches its HEAD, and
+# restore_moved_checkout returns it on a pre-apply refusal), and both write
+# gitignored terraform.tfvars under its composition directory. An install and an
+# upgrade running at once would take turns moving that one directory while both
+# read terraform and charts out of it.
+#
 # The KUBE_AGENTS_SOURCE_ONLY guard is install.sh's and is load-bearing here
 # too -- the test suite sources this file, and a lock taken at source time
 # would make the suite serialise against itself.
-LOCK_FILE="${KUBE_AGENTS_LOCK_FILE:-/tmp/kube-agents-upgrade.lock}"
+LOCK_FILE="${KUBE_AGENTS_LOCK_FILE:-/tmp/kube-agents-install.lock}"
 if [ "${KUBE_AGENTS_SOURCE_ONLY:-false}" != "true" ] && command -v flock >/dev/null 2>&1; then
   if ( : >"$LOCK_FILE" ) 2>/dev/null && exec 200>"$LOCK_FILE"; then
     if ! flock -n 200 2>/dev/null; then
-      echo -e "  \033[93m⚠ Another instance of the kube-agents upgrade is currently running. Exiting.\033[0m" >&2
+      echo -e "  \033[93m⚠ Another instance of the kube-agents installer or upgrade is currently running. Exiting.\033[0m" >&2
       exit 1
     fi
   fi
@@ -873,6 +878,10 @@ resolve_install_env_file() {
   fi
   if [ -n "$install_checkout" ] && [ -f "${install_checkout}/install.env" ]; then
     echo "${install_checkout}/install.env"
+    return 0
+  fi
+  if [ -n "${HOME:-}" ] && [ -f "${HOME}/kube-agents/install.env" ]; then
+    echo "${HOME}/kube-agents/install.env"
     return 0
   fi
   # Nothing exists yet. Naming the sources' own directory keeps the refusal

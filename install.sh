@@ -706,7 +706,25 @@ parse_args() {
       --enable-stockout-investigator|--enable-stockout|--enable-stockout-investigator=*|--enable-stockout=*)
         PARAM_ENABLE_STOCKOUT_INVESTIGATOR="$(flag_bool_value "$1")"
         validate_bool_flag_value "${1%%=*}" "$PARAM_ENABLE_STOCKOUT_INVESTIGATOR"; shift ;;
-      --memory=*) PARAM_MEMORY="${1#*=}"; PARAM_MEMORY_EXPLICIT="true"; shift ;;
+      # Validated for emptiness here, ahead of resolve_shared_defaults.
+      # PARAM_MEMORY is seeded from MEMORY and resolved with
+      # ${PARAM_MEMORY:-$DEFAULT_MEMORY}, so `--memory=` out of a wrapper
+      # expanding an unset variable would arrive at main() as the well-formed
+      # default ("file") WITH PARAM_MEMORY_EXPLICIT="true" -- replacing a
+      # recorded MEMORY=hindsight and telling write_tfvars_from_state not to
+      # probe the live cluster before planning hindsight-postgresql away.
+      --memory=*)
+        PARAM_MEMORY="${1#*=}"
+        if [ -z "$PARAM_MEMORY" ]; then
+          print_error "--memory= was given an empty value."
+          print_info "Pass --memory=off, --memory=file, or --memory=hindsight, or omit the flag to keep the recorded setting."
+          exit 1
+        fi
+        if [ -n "$PARAM_MEMORY" ]; then
+          PARAM_MEMORY_EXPLICIT="true"
+        fi
+        shift
+        ;;
       --image-tag=*) PARAM_IMAGE_TAG="${1#*=}"; shift ;;
       --registry-prefix=*) PARAM_REGISTRY_PREFIX="${1#*=}"; shift ;;
       --third-party-registry-prefix=*) PARAM_THIRD_PARTY_REGISTRY_PREFIX="${1#*=}"; shift ;;

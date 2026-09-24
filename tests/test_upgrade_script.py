@@ -1510,11 +1510,19 @@ exit {exit_code}
                 f'KUBE_AGENTS_REPO_URL="{upstream_url}"',
             )
         )
+        isolated_env = get_isolated_test_env(
+            overrides={
+                "HOME": str(home_dir),
+                "PATH": str(sterile_bin),
+                "KUBE_AGENTS_INSTALL_ENV": "",
+                "KUBE_AGENTS_LOCK_FILE": str(outside_dir / "upgrade.lock"),
+            }
+        )
         proc = subprocess.run(
             [shutil.which("bash") or "/bin/bash", str(isolated_upgrade_sh), "--image-tag=0.3.0", "--non-interactive"],
             capture_output=True,
             text=True,
-            env=get_isolated_test_env(overrides={"HOME": str(home_dir), "PATH": str(sterile_bin)}),
+            env=isolated_env,
             cwd=str(outside_dir),
         )
         self.assertEqual(proc.returncode, 1)
@@ -1532,7 +1540,7 @@ exit {exit_code}
             ],
             capture_output=True,
             text=True,
-            env=get_isolated_test_env(overrides={"HOME": str(home_dir), "PATH": str(sterile_bin)}),
+            env=isolated_env,
             cwd=str(outside_dir),
         )
         self.assertEqual(conflicting.returncode, 1)
@@ -2050,14 +2058,14 @@ class ConfigurationLookupOrderTest(unittest.TestCase):
 
     _INSTALLER_COMMON = _REPO_ROOT / "scripts" / "installer" / "installer_common.sh"
 
-    def _resolve(self, repo_dir, install_checkout, cwd, install_env_var=None):
+    def _resolve(self, repo_dir, install_checkout, cwd, home=None, install_env_var=None):
         setup = f"""
 KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
 # default_install_env_file is the last candidate, and it lives here.
 source "{self._INSTALLER_COMMON}"
 resolve_install_env_file "{repo_dir}" "{install_checkout}"
 """
-        env = {"HOME": str(cwd), "PATH": os.environ["PATH"]}
+        env = {"HOME": str(home if home is not None else cwd), "PATH": os.environ["PATH"]}
         if install_env_var is not None:
             env["KUBE_AGENTS_INSTALL_ENV"] = str(install_env_var)
         proc = subprocess.run(
@@ -2075,8 +2083,9 @@ resolve_install_env_file "{repo_dir}" "{install_checkout}"
         temp_dir = tempfile.TemporaryDirectory(prefix="install-env-order-")
         self.addCleanup(temp_dir.cleanup)
         base = pathlib.Path(temp_dir.name)
-        for name in ("sources", "cwd", "checkout"):
+        for name in ("sources", "cwd", "checkout", "home"):
             (base / name).mkdir()
+        (base / "home" / "kube-agents").mkdir()
         return base
 
     def test_the_explicit_pointer_wins(self):
@@ -2087,7 +2096,7 @@ resolve_install_env_file "{repo_dir}" "{install_checkout}"
         (base / "cwd" / "install.env").write_text("")
         (base / "checkout" / "install.env").write_text("")
 
-        resolved = self._resolve(base / "sources", base / "checkout", base / "cwd", install_env_var=named)
+        resolved = self._resolve(base / "sources", base / "checkout", base / "cwd", home=base / "home", install_env_var=named)
 
         self.assertEqual(resolved, str(named))
 
@@ -2097,7 +2106,7 @@ resolve_install_env_file "{repo_dir}" "{install_checkout}"
         (base / "sources" / "install.env").write_text("")
         (base / "cwd" / "install.env").write_text("")
 
-        resolved = self._resolve(base / "sources", base / "checkout", base / "cwd")
+        resolved = self._resolve(base / "sources", base / "checkout", base / "cwd", home=base / "home")
 
         self.assertEqual(resolved, str(base / "sources" / "install.env"))
 
@@ -2112,7 +2121,7 @@ resolve_install_env_file "{repo_dir}" "{install_checkout}"
         (base / "cwd" / "install.env").write_text("")
         (base / "checkout" / "install.env").write_text("")
 
-        resolved = self._resolve(base / "checkout", base / "checkout", base / "cwd")
+        resolved = self._resolve(base / "checkout", base / "checkout", base / "cwd", home=base / "home")
 
         self.assertEqual(resolved, str(base / "cwd" / "install.env"))
 
@@ -2121,15 +2130,29 @@ resolve_install_env_file "{repo_dir}" "{install_checkout}"
         base = self._layout()
         (base / "checkout" / "install.env").write_text("")
 
-        resolved = self._resolve(base / "checkout", base / "checkout", base / "cwd")
+        resolved = self._resolve(base / "checkout", base / "checkout", base / "cwd", home=base / "home")
 
         self.assertEqual(resolved, str(base / "checkout" / "install.env"))
+
+    def test_a_checkout_run_without_its_own_install_env_still_reaches_the_home_install_checkout(self):
+        """Running `./upgrade.sh` from a fresh git clone or unpacked bundle leaves
+        `install_checkout` empty in `acquire_upgrade_sources`, because the run
+        already has local sources and did not need to adopt `$HOME/kube-agents`.
+        Step 4 of the documented lookup order (`$HOME/kube-agents/install.env`)
+        must still be reached when neither the clone nor `$(pwd)` has an
+        `install.env` of its own."""
+        base = self._layout()
+        (base / "home" / "kube-agents" / "install.env").write_text("")
+
+        resolved = self._resolve(base / "sources", "", base / "cwd", home=base / "home")
+
+        self.assertEqual(resolved, str(base / "home" / "kube-agents" / "install.env"))
 
     def test_with_nothing_anywhere_it_names_the_sources_directory(self):
         """Nothing to load: the refusal that follows names where one would live."""
         base = self._layout()
 
-        resolved = self._resolve(base / "sources", "", base / "cwd")
+        resolved = self._resolve(base / "sources", "", base / "cwd", home=base / "home")
 
         self.assertEqual(resolved, str(base / "sources" / "install.env"))
 
@@ -2208,37 +2231,32 @@ class FrontDoorsAgreeOnTheInstallCheckoutTest(unittest.TestCase):
 
 
 class UpgradeRunsAreSerialisedTest(unittest.TestCase):
-    """One upgrade at a time, the way install.sh and uninstall.sh already are.
+    """install.sh and upgrade.sh share one checkout lock; uninstall.sh has its own.
 
-    An upgrade moves $HOME/kube-agents onto the release it is applying and then
-    reads terraform and charts out of it, so two at once would have the second
-    assembling a composition from whichever revision the first had the checkout
-    on at that moment.
+    Both install.sh and upgrade.sh move $HOME/kube-agents onto the release they
+    are applying (`refresh_existing_clone`, `restore_moved_checkout`) and write
+    `terraform.tfvars` inside it, so an install and an upgrade running at once
+    would take turns moving that one checkout while both read terraform and
+    charts out of it.
     """
 
     _FRONT_DOORS = ("install.sh", "uninstall.sh", "upgrade.sh")
 
-    def test_every_front_door_takes_a_lock_of_its_own(self):
-        """Each locks, none shares a lock file with another.
-
-        A shared file would serialise operations that have no reason to wait on
-        each other, and would give an install a new way to be stuck behind an
-        upgrade.
-        """
+    def test_install_and_upgrade_share_the_checkout_lock(self):
+        """install.sh and upgrade.sh lock the same file; uninstall.sh locks its own."""
         defaults = {}
         for name in self._FRONT_DOORS:
             with self.subTest(script=name):
                 text = (_REPO_ROOT / name).read_text()
-                # Two spellings: uninstall.sh fixes its path, the other two let
-                # KUBE_AGENTS_LOCK_FILE move it. What this test is about is that
-                # each has a lock and that no two default to the same file.
                 match = re.search(
                     r'LOCK_FILE="(?:\$\{KUBE_AGENTS_LOCK_FILE:-)?([^"}]+)\}?"', text
                 )
                 self.assertIsNotNone(match, f"{name} takes no lock ({len(text)} chars read)")
                 self.assertIn("flock -n 200", text, f"{name}'s lock waits instead of reporting")
                 defaults[name] = match.group(1)
-        self.assertEqual(len(set(defaults.values())), len(defaults), defaults)
+        self.assertEqual(defaults["install.sh"], "/tmp/kube-agents-install.lock")
+        self.assertEqual(defaults["upgrade.sh"], defaults["install.sh"])
+        self.assertEqual(defaults["uninstall.sh"], "/tmp/kube-agents-uninstall.lock")
 
     def test_the_lock_is_not_taken_when_the_script_is_only_sourced(self):
         """The suite sources upgrade.sh; a lock at source time would serialise it
@@ -2287,7 +2305,7 @@ class UpgradeRunsAreSerialisedTest(unittest.TestCase):
                 holder.kill()
                 holder.wait()
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-        self.assertIn("Another instance of the kube-agents upgrade", proc.stdout + proc.stderr)
+        self.assertIn("Another instance of the kube-agents installer or upgrade", proc.stdout + proc.stderr)
 
     def test_a_free_lock_lets_the_run_through(self):
         """The control: the same run with nothing holding the lock answers normally."""
@@ -2321,6 +2339,7 @@ class PipedUpgradeResolvesItsSourcesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="outside-checkout-") as outside:
             empty_install_env = pathlib.Path(outside) / "pinned-install.env"
             empty_install_env.write_text("")
+            lock_file = pathlib.Path(outside) / "upgrade.lock"
             # main() checks its CLI tools before resolving sources, the way
             # install.sh does. Stub them, so this test reads the source
             # resolution it is about on any host, rather than whichever tool the
@@ -2342,7 +2361,10 @@ class PipedUpgradeResolvesItsSourcesTest(unittest.TestCase):
                 capture_output=True,
                 text=True,
                 env=get_isolated_test_env(
-                    overrides={"KUBE_AGENTS_INSTALL_ENV": str(empty_install_env)},
+                    overrides={
+                        "KUBE_AGENTS_INSTALL_ENV": str(empty_install_env),
+                        "KUBE_AGENTS_LOCK_FILE": str(lock_file),
+                    },
                     bin_dir=str(stub_bin),
                 ),
                 cwd=outside,
@@ -2375,7 +2397,10 @@ class ExplicitInstallEnvPointerTest(unittest.TestCase):
             stub = stub_bin / tool
             stub.write_text("#!/usr/bin/env bash\necho \"STUB $0 $*\"\nexit 0\n")
             stub.chmod(0o755)
-        overrides = {"KUBE_AGENTS_INSTALL_ENV": str(install_env)}
+        overrides = {
+            "KUBE_AGENTS_INSTALL_ENV": str(install_env),
+            "KUBE_AGENTS_LOCK_FILE": str(pathlib.Path(cwd) / "upgrade.lock"),
+        }
         if home is not None:
             overrides["HOME"] = str(home)
         return subprocess.run(
