@@ -931,7 +931,8 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
             shutil.copy(_INSTALL_SH, script_copy)
             missing_env = checkout / "install.env"
             env = get_isolated_test_env(overrides={"HOME": str(home)})
-            env.pop("KUBE_AGENTS_INSTALL_ENV", None)
+            for var in ("KUBE_AGENTS_INSTALL_ENV", "CLUSTER_NAME", "PROJECT_ID", "REGION"):
+                env.pop(var, None)
             proc = _run_installer_bash(
                 f'KUBE_AGENTS_SOURCE_ONLY=true source "{script_copy}"\n'
                 f'INSTALL_ENV_EXPLICIT="false"; bootstrap_install_env "{missing_env}"\n'

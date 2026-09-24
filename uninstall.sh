@@ -289,22 +289,24 @@ resolve_state_location() {
 #   2. The checkout this script runs from (when it has one)
 #   3. The working directory the operator invoked it from
 #   4. The install checkout install.sh leaves in $HOME/kube-agents (consulted
-#      even when candidate_repo_dir is set, unlike upgrade.sh, because a piped
-#      teardown clones into a temporary directory before calling this)
+#      only on non-checkout runs — when install_checkout is non-empty because
+#      neither script_dir nor $(pwd) is a checkout — matching install.sh and
+#      upgrade.sh so a developer clone or unpacked bundle without its own
+#      install.env never reaches into $HOME/kube-agents/install.env)
 # Defined above main() rather than sourced from installer_common.sh because the
 # --source-ref arm hands over before any checkout with installer_common.sh is
 # sourced, and because the lookup itself decides which checkout's configuration
 # to read.
 resolve_uninstall_env_file() {
   local candidate_repo_dir="${1:-}"
-  local install_checkout="${HOME:-}/kube-agents"
+  local install_checkout="${2:-}"
   if [ -n "${KUBE_AGENTS_INSTALL_ENV:-}" ]; then
     echo "$KUBE_AGENTS_INSTALL_ENV"
   elif [ -n "$candidate_repo_dir" ] && [ -f "${candidate_repo_dir}/install.env" ]; then
     echo "${candidate_repo_dir}/install.env"
   elif [ -f "$(pwd)/install.env" ]; then
     echo "$(pwd)/install.env"
-  elif [ -n "${HOME:-}" ] && [ -f "${install_checkout}/install.env" ]; then
+  elif [ -n "$install_checkout" ] && [ -f "${install_checkout}/install.env" ]; then
     echo "${install_checkout}/install.env"
   elif [ -n "$candidate_repo_dir" ]; then
     echo "${candidate_repo_dir}/install.env"
@@ -415,9 +417,15 @@ main() {
     local wrapper_checkout=""
     if [ -f "${script_dir}/terraform/examples/full-install/lifecycle.sh" ]; then
       wrapper_checkout="$script_dir"
+    elif [ -f "$(pwd)/terraform/examples/full-install/lifecycle.sh" ]; then
+      wrapper_checkout="$(pwd)"
+    fi
+    local handoff_install_checkout=""
+    if [ -z "$wrapper_checkout" ] && [ -n "${HOME:-}" ]; then
+      handoff_install_checkout="${HOME}/kube-agents"
     fi
     local handoff_env_file
-    handoff_env_file="$(resolve_uninstall_env_file "$wrapper_checkout")"
+    handoff_env_file="$(resolve_uninstall_env_file "$wrapper_checkout" "$handoff_install_checkout")"
 
     # Provenance decides whether that answer is an instruction or a guess, so
     # the branch it came from is recomputed here. The last-resort arm of the
@@ -431,8 +439,8 @@ main() {
     if [ -z "${KUBE_AGENTS_INSTALL_ENV:-}" ] &&
       { [ -z "$wrapper_checkout" ] || [ ! -f "${wrapper_checkout}/install.env" ]; } &&
       [ ! -f "$(pwd)/install.env" ] &&
-      [ -n "${HOME:-}" ] &&
-      [ "$handoff_env_file" = "${HOME}/kube-agents/install.env" ]; then
+      [ -n "$handoff_install_checkout" ] &&
+      [ "$handoff_env_file" = "${handoff_install_checkout}/install.env" ]; then
       handoff_env_is_a_guess="true"
     fi
     # A $HOME guess is never read unless all three command-line coordinates
@@ -498,11 +506,11 @@ main() {
       # contradict it.
       if [ "$handoff_env_was_dropped" != "true" ]; then
         local handoff_searched="${PWD}"
-        if [ -n "$wrapper_checkout" ]; then
+        if [ -n "$wrapper_checkout" ] && [ "$wrapper_checkout" != "${PWD}" ]; then
           handoff_searched="${wrapper_checkout} or ${handoff_searched}"
         fi
-        if [ -n "${HOME:-}" ]; then
-          handoff_searched="${handoff_searched} or ${HOME}/kube-agents"
+        if [ -n "$handoff_install_checkout" ]; then
+          handoff_searched="${handoff_searched} or ${handoff_install_checkout}"
         fi
         print_warning "No install configuration (install.env) was found in ${handoff_searched}."
         if [ -z "$PARAM_PROJECT_ID" ] && [ -z "$PARAM_CLUSTER_NAME" ] && [ -z "$PARAM_REGION" ]; then
@@ -590,9 +598,17 @@ main() {
   # shellcheck disable=SC1091
   source "${repo_dir}/scripts/installer/installer_common.sh"
   # install.env is optional here: unlike upgrade.sh, a teardown can proceed on
-  # --gcp-project-id/--gke-cluster-name/--gcp-region alone.
+  # --gcp-project-id/--gke-cluster-name/--gcp-region alone. On a non-checkout
+  # run (TEMP_REPO_DIR is non-empty, e.g. curl … | bash), the lookup reaches
+  # $HOME/kube-agents/install.env as step 4; on a checkout run without its own
+  # install.env, install_checkout stays empty so the run never reaches into
+  # $HOME/kube-agents/install.env and destroys another install.
+  local install_checkout=""
+  if [ -n "${TEMP_REPO_DIR:-}" ] && [ -n "${HOME:-}" ]; then
+    install_checkout="${HOME}/kube-agents"
+  fi
   local install_env_file
-  install_env_file="$(resolve_uninstall_env_file "$repo_dir")"
+  install_env_file="$(resolve_uninstall_env_file "$repo_dir" "$install_checkout")"
   local state_loaded="false"
   # Clear any shell-exported coordinates before sourcing the file: load_install_env
   # only unsets NAMESPACE, so without this an exported REGION or PROJECT_ID in

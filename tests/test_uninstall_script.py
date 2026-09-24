@@ -637,25 +637,34 @@ class SourceRefDispatchTest(unittest.TestCase):
 
     def test_source_ref_refuses_when_flags_disagree_with_the_install_checkout(self):
         """A `--source-ref` run that loads an explicitly located `install.env`
-        (from `$PWD`, the script checkout, or `KUBE_AGENTS_INSTALL_ENV`) while
-        its flags name another install must refuse before dispatching."""
-        proc, log = self._run(
-            ref_carries_uninstall=True,
-            args=[
-                "--source-ref=v0.3.0",
-                "--non-interactive",
-                "--gcp-project-id=from-cwd",
-                "--gke-cluster-name=install-b",
-            ],
-            cwd_install_env=(
-                'PROJECT_ID="from-cwd"\n'
-                'CLUSTER_NAME="install-a"\n'
-            ),
+        (from `$PWD` or `KUBE_AGENTS_INSTALL_ENV`) while its flags name another
+        install must refuse before dispatching."""
+        env_text = (
+            'PROJECT_ID="from-cwd"\n'
+            'CLUSTER_NAME="install-a"\n'
         )
-        combined = proc.stdout + proc.stderr
-        self.assertEqual(proc.returncode, 1, combined)
-        self.assertIn("records a different install than the flags name", combined)
-        self.assertIsNone(log)
+        with tempfile.TemporaryDirectory(prefix="source-ref-explicit-") as explicit_dir:
+            explicit_file = pathlib.Path(explicit_dir) / "install.env"
+            explicit_file.write_text(env_text)
+            for label, kw in (
+                ("cwd", {"cwd_install_env": env_text}),
+                ("KUBE_AGENTS_INSTALL_ENV", {"install_env_var": str(explicit_file)}),
+            ):
+                with self.subTest(source=label):
+                    proc, log = self._run(
+                        ref_carries_uninstall=True,
+                        args=[
+                            "--source-ref=v0.3.0",
+                            "--non-interactive",
+                            "--gcp-project-id=from-cwd",
+                            "--gke-cluster-name=install-b",
+                        ],
+                        **kw,
+                    )
+                    combined = proc.stdout + proc.stderr
+                    self.assertEqual(proc.returncode, 1, combined)
+                    self.assertIn("records a different install than the flags name", combined)
+                    self.assertIsNone(log)
 
     def test_a_stranger_in_home_does_not_block_a_fully_named_teardown(self):
         """The case --source-ref exists for, on a workstation that is not empty.
@@ -889,6 +898,7 @@ class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
         repo_install_env=None,
         explicit_install_env=None,
         extra_env=None,
+        from_checkout=None,
     ):
         """A --dry-run teardown from a neutral directory, with HOME moved.
 
@@ -896,7 +906,16 @@ class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
         resolution, the coordinates, and what the run says about them. The
         gcloud stub answers the active-project query the way a developer
         machine -- or a GCE metadata server -- would.
+
+        When `from_checkout` is False (the default when `repo_install_env` is
+        None), `uninstall.sh` runs as a standalone file outside any checkout so
+        `TEMP_REPO_DIR` is populated via a stub `git clone` and the non-checkout
+        `${install_checkout}/install.env` fallback in `$HOME/kube-agents` is
+        exercised. When `from_checkout` is True (or `repo_install_env` is
+        supplied), `uninstall.sh` runs directly out of `_scratch_repo`.
         """
+        if from_checkout is None:
+            from_checkout = repo_install_env is not None
         bin_dir = create_minimal_tools_bin(tmp)
         gcloud = bin_dir / "gcloud"
         gcloud.write_text(
@@ -915,6 +934,25 @@ class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
         root = self._scratch_repo(tmp)
         if repo_install_env is not None:
             (root / "install.env").write_text(repo_install_env)
+        if from_checkout:
+            script_to_run = root / "uninstall.sh"
+        else:
+            standalone_dir = pathlib.Path(tmp) / "standalone"
+            standalone_dir.mkdir(exist_ok=True)
+            script_to_run = standalone_dir / "uninstall.sh"
+            shutil.copy(_UNINSTALL_SH, script_to_run)
+            git_stub = bin_dir / "git"
+            git_stub.unlink(missing_ok=True)
+            git_stub.write_text(
+                "#!/usr/bin/env bash\n"
+                'if [ "${1:-}" = "clone" ]; then\n'
+                '  dest="${!#}"\n'
+                f'  cp -R "{root}/." "$dest/"\n'
+                "  exit 0\n"
+                "fi\n"
+                "exit 0\n"
+            )
+            git_stub.chmod(git_stub.stat().st_mode | stat.S_IEXEC)
         overrides = {
             "PATH": str(bin_dir),
             "HOME": str(home),
@@ -923,7 +961,7 @@ class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
         }
         if extra_env:
             overrides.update(extra_env)
-        cmd = ["bash", str(root / "uninstall.sh"), "--non-interactive"]
+        cmd = ["bash", str(script_to_run), "--non-interactive"]
         if dry_run:
             cmd.append("--dry-run")
         cmd.extend(args)
@@ -955,6 +993,28 @@ class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
             self.assertIn("the-installs-cluster in the-installs-project (europe-north1)", combined)
             self.assertNotIn("the-machines-own-project", combined)
             self.assertNotIn("is installer_common.sh's default, not this install's", combined)
+
+    def test_a_checkout_run_without_its_own_install_env_does_not_reach_into_home(self):
+        """Running `./uninstall.sh` from a checkout with no `install.env` of its
+        own must NOT load `$HOME/kube-agents/install.env`, matching `install.sh`
+        and `upgrade.sh`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp) / "home"
+            (home / "kube-agents").mkdir(parents=True)
+            (home / "kube-agents" / "install.env").write_text(
+                'PROJECT_ID="another-installs-project"\n'
+                'CLUSTER_NAME="another-installs-cluster"\n'
+                'REGION="europe-north1"\n'
+            )
+
+            proc = self._preview(tmp, home, from_checkout=True)
+
+            combined = proc.stdout + proc.stderr
+            self.assertEqual(proc.returncode, 0, combined)
+            self.assertNotIn("Loaded install configuration from", combined)
+            self.assertNotIn("another-installs-cluster", combined)
+            self.assertIn("No install configuration (install.env) was found", combined)
+            self.assertIn("is installer_common.sh's default, not this install's", combined)
 
     def test_a_teardown_with_nothing_to_read_says_what_it_is_guessing(self):
         """It is still allowed to run on defaults -- `./uninstall.sh` in a

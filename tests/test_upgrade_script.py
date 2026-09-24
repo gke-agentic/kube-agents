@@ -70,13 +70,17 @@ KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"
     def test_piped_stdin_executes_main(self):
         """Ensures piped curl | bash invocations execute main and do not exit early."""
         upgrade_script_content = _UPGRADE_SH.read_text()
-        proc = subprocess.run(
-            ["bash", "-s", "--", "--help"],
-            input=upgrade_script_content,
-            capture_output=True,
-            text=True,
-            cwd=str(_REPO_ROOT),
-        )
+        with tempfile.TemporaryDirectory(prefix="upgrade-piped-help-") as tmp:
+            proc = subprocess.run(
+                ["bash", "-s", "--", "--help"],
+                input=upgrade_script_content,
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(
+                    overrides={"KUBE_AGENTS_LOCK_FILE": str(pathlib.Path(tmp) / "upgrade.lock")}
+                ),
+                cwd=str(_REPO_ROOT),
+            )
         self.assertEqual(proc.returncode, 0, f"Piped execution failed: {proc.stderr}")
         self.assertIn(UPGRADER_HELP_BANNER, proc.stdout)
 
@@ -567,6 +571,9 @@ class InteractiveImageTagPromptTest(unittest.TestCase):
         import pty
         import select
 
+        lock_dir = tempfile.TemporaryDirectory(prefix="upgrade-pty-lock-")
+        self.addCleanup(lock_dir.cleanup)
+        lock_file = str(pathlib.Path(lock_dir.name) / "upgrade.lock")
         pid, fd = pty.fork()
         if pid == 0:  # pragma: no cover - replaced by execve
             # os._exit, not an exception: a raise here would unwind inside a
@@ -576,8 +583,12 @@ class InteractiveImageTagPromptTest(unittest.TestCase):
                 os.execve(
                     "/bin/bash",
                     ["bash", str(_UPGRADE_SH)],
-                    {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                     "HOME": os.environ.get("HOME", "/tmp"), "TERM": "dumb"},
+                    {
+                        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                        "HOME": os.environ.get("HOME", "/tmp"),
+                        "TERM": "dumb",
+                        "KUBE_AGENTS_LOCK_FILE": lock_file,
+                    },
                 )
             finally:
                 os._exit(127)
@@ -773,13 +784,16 @@ class AgentNamespaceFlagTest(unittest.TestCase):
     def test_the_help_text_names_the_flag(self):
         """Nothing in the tree passes it, so `--help` is the only place an
         operator can find it."""
-        proc = subprocess.run(
-            ["bash", str(_UPGRADE_SH), "--help"],
-            capture_output=True,
-            text=True,
-            env=get_isolated_test_env(),
-            cwd=str(_REPO_ROOT),
-        )
+        with tempfile.TemporaryDirectory(prefix="upgrade-ns-help-") as tmp:
+            proc = subprocess.run(
+                ["bash", str(_UPGRADE_SH), "--help"],
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(
+                    overrides={"KUBE_AGENTS_LOCK_FILE": str(pathlib.Path(tmp) / "upgrade.lock")}
+                ),
+                cwd=str(_REPO_ROOT),
+            )
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
         self.assertIn("--agent-namespace", proc.stdout)
 
@@ -1479,6 +1493,29 @@ exit {exit_code}
         self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
         self.assertFalse(tfvars.exists())
 
+    def test_a_run_that_fails_after_helm_release_repair_notes_the_repair_in_the_restore_notice(self):
+        """When `ensure_clean_helm_release` repairs a stuck `pending-*` release
+        (`HELM_RELEASE_REPAIRED=true`) and the run then aborts before the new
+        release is applied, `restore_moved_checkout` must note the Helm repair
+        rather than claiming `Nothing was applied`."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+
+        proc = self._acquire_then_exit(
+            home_dir,
+            upstream_url,
+            "0.3.0",
+            exit_code=1,
+            between='HELM_RELEASE_REPAIRED="true"',
+        )
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+        self.assertNotIn("Nothing was applied", proc.stdout)
+        self.assertIn(
+            "The new release was not applied (after repairing the pending Helm release)",
+            proc.stdout,
+        )
+
     def test_a_plain_directory_at_the_clone_path_is_not_adopted(self):
         """A stale bundle or a copied tree in HOME is not verified release sources.
 
@@ -1646,10 +1683,10 @@ exit {exit_code}
 
         The distinction this makes against _acquire_from_outside is the point:
         there the script is a file, so BASH_SOURCE[0] names it. Under
-        `curl … | bash` there is no file, and bash fills BASH_SOURCE[0] inside a
-        function with the name the shell was invoked as ("bash") — which
-        dirname turns into the invocation directory. Sourcing a copy therefore
-        cannot reach the arms a real pipe takes.
+        `curl … | bash` there is no file, and bash leaves BASH_SOURCE[0] unset
+        or empty when executing from stdin (or non-existent if a caller passes a
+        synthetic name). Sourcing a copy from disk therefore cannot reach the
+        arms a real pipe takes.
         """
         preview_line = f'{preview_flag}="true"' if preview_flag else ":"
         piped = "\n".join(

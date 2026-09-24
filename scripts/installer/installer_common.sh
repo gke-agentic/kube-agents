@@ -1269,6 +1269,7 @@ ensure_clean_helm_release() {
         fi
 
         if helm uninstall "${release_name}" -n "${namespace}" --wait; then
+          HELM_RELEASE_REPAIRED="true"
           if type print_success >/dev/null 2>&1; then
             print_success "Successfully cleaned up stuck pending-install release '${release_name}'."
           else
@@ -1317,6 +1318,7 @@ ensure_clean_helm_release() {
       if [ -n "${last_good_rev}" ]; then
         echo "==> Rolling back '${release_name}' to revision ${last_good_rev}..." >&2
         if helm rollback "${release_name}" "${last_good_rev}" -n "${namespace}" --wait --timeout "${HELM_ROLLBACK_TIMEOUT:-$HELM_ROLLBACK_TIMEOUT_DEFAULT}"; then
+          HELM_RELEASE_REPAIRED="true"
           if type print_success >/dev/null 2>&1; then
             print_success "Successfully rolled back Helm release '${release_name}' to revision ${last_good_rev}."
           else
@@ -1339,6 +1341,8 @@ ensure_clean_helm_release() {
             echo "⚠️ WARNING: Helm release '${release_name}' is in '${release_status}', but no previous deployed revision exists in history. ALLOW_UNINSTALL_PENDING_RELEASE=true: uninstalling to recover..." >&2
           fi
           helm uninstall "${release_name}" -n "${namespace}" --wait
+          # shellcheck disable=SC2034 # Read by upgrade.sh's restore_moved_checkout.
+          HELM_RELEASE_REPAIRED="true"
           return 0
         else
           if type print_error >/dev/null 2>&1; then
@@ -1428,7 +1432,7 @@ live_hindsight_state() {
     #
     # `trap - ERR` inside the substitution for the bash 3.2 reason the probes
     # above give -- a non-zero exit here is the tested condition, not an abort.
-    out="$({ trap - ERR; kubectl get "$kind" "$name" -n "$namespace" \
+    out="$({ trap - ERR; kubectl get "$kind" "$name" -n "$namespace" --context "$expected_ctx" \
       --request-timeout="${KUBECTL_PROBE_REQUEST_TIMEOUT}" --ignore-not-found -o name; } 2>&1)" || rc=$?
     if [ "$rc" -eq 0 ]; then
       if printf '%s\n' "$out" | grep -qE "(^|/)${name}\$"; then

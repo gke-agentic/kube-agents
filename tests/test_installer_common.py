@@ -997,7 +997,7 @@ class InstallerCommonTest(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             'case "$*" in\n'
             '  *"current-context"*) echo "gke_test-project_us-central1_test-cluster"; exit 0 ;;\n'
-            '  *"get statefulset hindsight-postgresql"*)\n'
+            '  *"get statefulset hindsight-postgresql"*"--context gke_test-project_us-central1_test-cluster"*)\n'
             '    echo "statefulset.apps/hindsight-postgresql"; exit 0 ;;\n'
             "esac\n"
             "exit 1\n"

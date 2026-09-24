@@ -48,6 +48,7 @@ kube_agents_clone_dir() { printf '%s/kube-agents' "${HOME:?the upgrader looks fo
 # clone is moved to the requested release only when its HEAD tracks this file,
 # so a repository that merely shares the directory name is left alone.
 KUBE_AGENTS_CLONE_MARKER="install.sh"
+KUBE_AGENTS_INSTALLER_COMMON_MARKER="scripts/installer/installer_common.sh"
 # The fetch depth the fresh clone uses, and that a clone which is already
 # shallow (one an earlier install left) keeps; a complete clone is fetched
 # without it so it does not become shallow.
@@ -92,6 +93,7 @@ MOVED_CHECKOUT_PREV_BRANCH=""
 MOVED_CHECKOUT_TFVARS_PATH=""
 MOVED_CHECKOUT_PREV_TFVARS=""
 UPGRADE_APPLY_STARTED="false"
+HELM_RELEASE_REPAIRED="false"
 # Set when the sources came from a checkout that was already on disk rather
 # than from a fetch this run made. See verify_local_source_ref: a tag in a
 # directory this run did not fetch is only as trustworthy as wherever it came
@@ -163,8 +165,19 @@ restore_moved_checkout() {
   # already failed, and a checkout the operator has since edited is theirs to
   # resolve. Say so either way rather than restoring silently.
   if git -C "$MOVED_CHECKOUT_DIR" checkout --quiet "$target" 2>/dev/null; then
+    local pre_apply_repairs=""
     if [ "${SESSION_KV_KEYS_PATCHED:-false}" = "true" ] || [ "${SANDBOX_KEYS_PATCHED:-false}" = "true" ]; then
-      print_info "The new release was not applied (after reconciling Secret keys in step 3), so ${MOVED_CHECKOUT_DIR} was returned to ${what}."
+      pre_apply_repairs="reconciling Secret keys in step 3"
+    fi
+    if [ "${HELM_RELEASE_REPAIRED:-false}" = "true" ]; then
+      if [ -n "$pre_apply_repairs" ]; then
+        pre_apply_repairs="${pre_apply_repairs} and repairing the pending Helm release"
+      else
+        pre_apply_repairs="repairing the pending Helm release"
+      fi
+    fi
+    if [ -n "$pre_apply_repairs" ]; then
+      print_info "The new release was not applied (after ${pre_apply_repairs}), so ${MOVED_CHECKOUT_DIR} was returned to ${what}."
     else
       print_info "Nothing was applied, so ${MOVED_CHECKOUT_DIR} was returned to ${what}."
     fi
@@ -839,7 +852,7 @@ is_kube_agents_clone() {
   [ -e "${repo_dir}/.git" ] || return 1
   git -C "$repo_dir" rev-parse --verify HEAD >/dev/null 2>&1 || return 1
   [ -n "$(git -C "$repo_dir" ls-tree --name-only HEAD -- "$KUBE_AGENTS_CLONE_MARKER" 2>/dev/null)" ] &&
-    [ -n "$(git -C "$repo_dir" ls-tree --name-only HEAD -- "scripts/installer/installer_common.sh" 2>/dev/null)" ]
+    [ -n "$(git -C "$repo_dir" ls-tree --name-only HEAD -- "$KUBE_AGENTS_INSTALLER_COMMON_MARKER" 2>/dev/null)" ]
 }
 
 # Whether a checkout already sits on the requested ref. A preview may take its
@@ -999,29 +1012,19 @@ acquire_upgrade_sources() {
   # $1 or $2 would be the one printf -v writes to, and the caller would read
   # back an empty string.
   local resolved_dir="" found_checkout="" script_dir="" script_path="${BASH_SOURCE[0]:-}"
-  # Under `curl … | bash` BASH_SOURCE[0] is unset only at the top level. Inside
-  # a function bash fills it with the name it was invoked as ("bash"), which
-  # dirname turns into "." and pwd into the directory the operator is standing
-  # in — so a non-empty test alone would hand a piped run whatever it is
-  # standing in, skipping the checkout arms below. Requiring the entry to name
-  # a file that is actually there rejects that, because "bash" is not a file in
-  # the directory the operator stands in.
-  #
-  # It is a test of plausibility, not of identity: `curl … | /bin/bash` names a
-  # file that does exist, and so would a file called `bash` sitting in the
-  # invocation directory. The first is harmless because /bin carries no
-  # scripts/installer/installer_common.sh and the run falls through to the arms
-  # below. The second, inside an install checkout, does resolve to that
-  # checkout and costs the run its install_checkout, so it is refused on the
-  # ref check rather than upgrading anything wrongly. Both are fail-closed —
-  # but do not read this guard as proof that script_dir is this script's own
-  # directory, because it is not.
+  # Under `curl … | bash` there is no script file on disk, so
+  # `${BASH_SOURCE[0]:-}` expands to `""`, which `dirname ""` turns into `.` and
+  # `pwd` into the directory the operator is standing in — so calling `dirname`
+  # without checking `[ -n "$script_path" ] && [ -f "$script_path" ]` would hand
+  # a piped run whatever directory it was invoked from, skipping the checkout
+  # arms below. Requiring a non-empty path that names an existing file rejects
+  # both the empty expansion on a pipe and any non-file `$0` fallback.
   if [ -n "$script_path" ] && [ -f "$script_path" ]; then
     script_dir="$(cd "$(dirname "$script_path")" 2>/dev/null && pwd || echo "")"
   fi
-  if [ -n "$script_dir" ] && [ -f "${script_dir}/scripts/installer/installer_common.sh" ]; then
+  if [ -n "$script_dir" ] && [ -f "${script_dir}/${KUBE_AGENTS_INSTALLER_COMMON_MARKER}" ]; then
     resolved_dir="$script_dir"
-  elif [ -f "$(pwd)/scripts/installer/installer_common.sh" ] && {
+  elif [ -f "$(pwd)/${KUBE_AGENTS_INSTALLER_COMMON_MARKER}" ] && {
     [ -z "$expected_ref" ] || ! is_kube_agents_clone "$(pwd)"
   }; then
     resolved_dir="$(pwd)"
@@ -1224,7 +1227,7 @@ main() {
   # below needs load_install_env. Print helpers are already defined above, as
   # the file expects.
   # shellcheck disable=SC1091
-  source "${repo_dir}/scripts/installer/installer_common.sh"
+  source "${repo_dir}/${KUBE_AGENTS_INSTALLER_COMMON_MARKER}"
 
   # install.env is the install's configuration, and the only one. It is resolved
   # against the install checkout as well as this run's sources, because a
