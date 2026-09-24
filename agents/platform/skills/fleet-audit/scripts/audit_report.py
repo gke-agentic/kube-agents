@@ -477,7 +477,12 @@ DELTA_RE = re.compile(
 # 5: `collect.py` makes the same rename for the obtainability, compliance and
 # ai-security streams, which until then published the bare names their
 # documents wrote.
-ID_SCHEME = 5
+#
+# 6: the stockout-prevention and fleet-wide-cost-analysis SOPs qualify their
+# cluster names as `<project>/<cluster>`, and the networking and GCE audits
+# name their project targets `project/<id>`, so multi-project runs do not
+# collapse identically named targets across projects.
+ID_SCHEME = 6
 # Joins a qualified cluster name's `<project>/<location>/<name>` segments.
 QUALIFIED_TARGET_SEPARATOR = "/"
 # `<project>/<location>/<name>`: the segments of a qualified cluster name.
@@ -1360,13 +1365,13 @@ def target_kind(name: str) -> str:
     """Which kind of thing a `scope.clusters` entry names.
 
     The SOPs already encode this in the name they ask for, so nothing new has to
-    be carried per entry: `project/<id>` is the project-scoped entry, a name with
-    a `/` in it is a `<project>/<region>/<subnet>` target, and a bare name is a
-    cluster.
+    be carried per entry: `project/<id>` is the project-scoped entry, a three-part
+    `<project>/<region>/<subnet>` path is a subnet target, and a bare `<cluster>`
+    or `<project>/<cluster>` name is a cluster.
     """
     if name.startswith(PROJECT_TARGET_PREFIX):
         return TARGET_KIND_PROJECT
-    return TARGET_KIND_SUBNET if "/" in name else TARGET_KIND_CLUSTER
+    return TARGET_KIND_SUBNET if name.count("/") >= 2 else TARGET_KIND_CLUSTER
 
 
 def audit_target_checks(audit_id: str, target_name: str) -> tuple[str, ...]:
@@ -2167,8 +2172,9 @@ def validate_findings(data: object, audit_id: str) -> dict:
                 f"scope.clusters[{i}].name: duplicate cluster {name!r}. Findings "
                 "reference a cluster by this name, so two clusters sharing one "
                 "name cannot be told apart — their findings would merge into a "
-                "single identity and the ledger would under-report. Audit the "
-                "projects in separate runs."
+                "single identity and the ledger would under-report. Qualify "
+                "every cluster name with its project, as the SOP's §1 "
+                "requires, which keeps a multi-project run unambiguous."
             )
         audited_names.add(name)
         # By the name's shape, as `_scope_qualified_names` reads it: the
