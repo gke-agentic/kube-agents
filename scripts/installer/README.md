@@ -125,7 +125,11 @@ and last the install checkout in `$HOME/kube-agents`. `upgrade.sh` and `uninstal
 that last candidate on the path the release-pinned one-liner takes — it has no checkout of
 its own, so the installer's is where the install's configuration is — and it is last rather
 than first so that a workstation managing two installs acts on the one whose directory the
-operator is standing in, not whichever one that shared checkout belongs to.
+operator is standing in, not whichever one that shared checkout belongs to. The one exception
+is `uninstall.sh --source-ref`: because that handover exists to tear down an older release
+(and pre-`0.4.0` installs wrote no `install.env`), a file found only at
+`$HOME/kube-agents/install.env` is skipped unless all three of `--gcp-project-id`,
+`--gke-cluster-name`, and `--gcp-region` are given on the command line and match it.
 
 `install.sh` reads it and does not rewrite it. It creates one at the end of a first
 install, when there is nothing there, and never touches it again; the Day-2 menu's

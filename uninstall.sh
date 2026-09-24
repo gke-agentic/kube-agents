@@ -437,28 +437,30 @@ main() {
       [ "$handoff_env_file" = "${HOME}/kube-agents/install.env" ]; then
       handoff_env_is_a_guess="true"
     fi
-    # A $HOME guess is never read unless the command-line coordinates confirm it.
-    # On a flagless --source-ref run, any file at $HOME/kube-agents/install.env
-    # was written by a >= 0.4.0 install (pre-Terraform releases wrote no
-    # install.env), so forwarding its coordinates aims the old uninstaller at
-    # the workstation's current install instead of the legacy one. And when all
-    # three coordinates ARE on the command line and contradict the guess,
-    # dropping it avoids the refusal below (which offers three ways out that an
-    # install with no install.env anywhere does not have) and keeps `set -a`
-    # from exporting the stranger's NAMESPACE, MEMORY, GITOPS_* and state-bucket
-    # keys into the child release.
+    # A $HOME guess is never read unless all three command-line coordinates
+    # confirm it. Any file at $HOME/kube-agents/install.env was written by a
+    # >= 0.4.0 install (pre-Terraform releases wrote no install.env), so reading
+    # it on a flagless or partially-flagged --source-ref run would fill the
+    # unnamed coordinates (such as CLUSTER_NAME when only project and region are
+    # given) from the workstation's current install and aim the legacy
+    # uninstaller at that cluster. And when all three coordinates ARE on the
+    # command line and contradict the guess, dropping it avoids the coordinate
+    # conflict refusal below and keeps `set -a` from exporting the stranger's
+    # NAMESPACE, MEMORY, GITOPS_* and state-bucket keys into the child release.
     #
-    # A partly named install (one or two coordinates) that disagrees with the
-    # guess still falls through to check_uninstall_coordinate_conflicts below,
-    # which refuses and tells the operator to pass all three coordinates. And a
-    # guess whose coordinates agree with the flags is still read, so its
-    # NAMESPACE and other settings travel with the confirmed target.
+    # Only when all three coordinates are given on the command line and agree
+    # with the $HOME file is it read, so its NAMESPACE and other settings travel
+    # with the confirmed target.
     if [ "$handoff_env_is_a_guess" = "true" ] &&
-      [ -z "$PARAM_PROJECT_ID" ] && [ -z "$PARAM_CLUSTER_NAME" ] && [ -z "$PARAM_REGION" ] &&
+      { [ -z "$PARAM_PROJECT_ID" ] || [ -z "$PARAM_CLUSTER_NAME" ] || [ -z "$PARAM_REGION" ]; } &&
       [ -f "$handoff_env_file" ]; then
-      print_warning "Not reading ${handoff_env_file}: --source-ref is for tearing down an older release, this file was found only by searching \$HOME, and no coordinate flags confirmed it belongs to the install being torn down."
-      print_warning "No coordinates are being forwarded either, so the '${PARAM_SOURCE_REF}' release will aim at its own defaults and gcloud's active project."
-      print_info "Pass --gcp-project-id, --gke-cluster-name and --gcp-region to name the install to tear down, or point KUBE_AGENTS_INSTALL_ENV at ${handoff_env_file} (or run from ${HOME}/kube-agents) if that file is the one you mean."
+      print_warning "Not reading ${handoff_env_file}: --source-ref is for tearing down an older release, this file was found only by searching \$HOME, and not all three of --gcp-project-id, --gke-cluster-name and --gcp-region were given to confirm it belongs to the install being torn down."
+      if [ -z "$PARAM_PROJECT_ID" ] && [ -z "$PARAM_CLUSTER_NAME" ] && [ -z "$PARAM_REGION" ]; then
+        print_warning "No coordinates are being forwarded either, so the '${PARAM_SOURCE_REF}' release will aim at its own defaults and gcloud's active project."
+      else
+        print_info "Forwarding only the command-line coordinates given to the '${PARAM_SOURCE_REF}' release; unnamed coordinates will use that release's defaults."
+      fi
+      print_info "Pass all three of --gcp-project-id, --gke-cluster-name and --gcp-region to name the install to tear down, or point KUBE_AGENTS_INSTALL_ENV at ${handoff_env_file} (or run from ${HOME}/kube-agents) if that file is the one you mean."
       handoff_env_file=""
       handoff_env_was_dropped="true"
     elif [ "$handoff_env_is_a_guess" = "true" ] &&
@@ -482,12 +484,7 @@ main() {
       . "$handoff_env_file"
       set +a
       print_success "Loaded install configuration from: ${handoff_env_file}"
-      # The extra remedy is this arm's own: naming all three coordinates drops
-      # an unnamed $HOME fallback above instead of colliding with it. It is not
-      # offered by the local arms, which read the file for more than
-      # coordinates, so it is passed in rather than built into the refusal.
-      check_uninstall_coordinate_conflicts "$handoff_env_file" \
-        "For an install too old to have an install.env of its own, name all three of --gcp-project-id, --gke-cluster-name and --gcp-region: an install.env found by searching \$HOME is then not read at all."
+      check_uninstall_coordinate_conflicts "$handoff_env_file"
       export KUBE_AGENTS_INSTALL_ENV="$handoff_env_file"
     else
       # Silence here is what makes this arm dangerous. Nothing is forwarded, and

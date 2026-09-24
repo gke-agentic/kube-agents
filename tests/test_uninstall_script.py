@@ -599,29 +599,62 @@ class SourceRefDispatchTest(unittest.TestCase):
         self.assertIsNotNone(log, combined)
         self.assertEqual(log.split(), ["--non-interactive"])
 
+    def test_a_partial_flag_match_does_not_read_the_home_guess_on_source_ref(self):
+        """A `--source-ref` run with one or two coordinate flags that happen to
+        coincide with `$HOME/kube-agents/install.env` must not fill the omitted
+        coordinates (such as `CLUSTER_NAME` or `NAMESPACE`) from `$HOME`."""
+        proc, log = self._run(
+            ref_carries_uninstall=True,
+            ref_speaks_domain_scoped=True,
+            args=[
+                "--source-ref=v0.3.0",
+                "--non-interactive",
+                "--gcp-project-id=from-home",
+                "--gcp-region=us-east1",
+            ],
+            home_install_env=(
+                'PROJECT_ID="from-home"\n'
+                'CLUSTER_NAME="install-a"\n'
+                'REGION="us-east1"\n'
+                'NAMESPACE="install-a-ns"\n'
+            ),
+        )
+        combined = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 0, combined)
+        self.assertIn("Not reading", combined)
+        self.assertIn("found only by searching $HOME", combined)
+        self.assertIn("Forwarding only the command-line coordinates given", combined)
+        self.assertNotIn("No install configuration (install.env) was found", combined)
+        self.assertIsNotNone(log, combined)
+        self.assertEqual(
+            log.split(),
+            [
+                "--non-interactive",
+                "--gcp-project-id=from-home",
+                "--gcp-region=us-east1",
+            ],
+        )
+
     def test_source_ref_refuses_when_flags_disagree_with_the_install_checkout(self):
-        """A `--source-ref` run that loads install A's configuration while its
-        flags name install B must refuse before dispatching to the child."""
+        """A `--source-ref` run that loads an explicitly located `install.env`
+        (from `$PWD`, the script checkout, or `KUBE_AGENTS_INSTALL_ENV`) while
+        its flags name another install must refuse before dispatching."""
         proc, log = self._run(
             ref_carries_uninstall=True,
             args=[
                 "--source-ref=v0.3.0",
                 "--non-interactive",
-                "--gcp-project-id=from-home",
+                "--gcp-project-id=from-cwd",
                 "--gke-cluster-name=install-b",
             ],
-            home_install_env=(
-                'PROJECT_ID="from-home"\n'
+            cwd_install_env=(
+                'PROJECT_ID="from-cwd"\n'
                 'CLUSTER_NAME="install-a"\n'
             ),
         )
         combined = proc.stdout + proc.stderr
         self.assertEqual(proc.returncode, 1, combined)
         self.assertIn("records a different install than the flags name", combined)
-        # The flags here name two of the three coordinates, so the guess is not
-        # dropped -- and the refusal has to say what would get past it, because
-        # the three generic ways out do not fit an install with no install.env.
-        self.assertIn("name all three of", combined)
         self.assertIsNone(log)
 
     def test_a_stranger_in_home_does_not_block_a_fully_named_teardown(self):
