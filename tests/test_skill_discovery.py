@@ -18,11 +18,12 @@ Two mechanisms stand between those outcomes, and nothing checked either one.
 
 The first is where the skills sit. Claude Code reads `.claude/skills/`, and
 #1471 made that a symlink to `.agents/` rather than a second copy. A symlink is
-one `git mv` away from being an ordinary directory that drifts, or an absolute
-path that resolves only on the machine that wrote it, and either failure is
-invisible: the repository still contains every skill, so nothing looks wrong
-until an assistant in a fresh clone reports it has none. That is the half of
-the premise this repository controls and the only half asserted below. The
+one dropped `.gitignore` negation away from being absent, one `git mv` away from
+being an ordinary directory that drifts, or an absolute path that resolves only
+on the machine that wrote it, and each failure is invisible: the repository
+still contains every skill, so nothing looks wrong until an assistant in a fresh
+clone reports it has none. That is the half of the premise this repository
+controls and the only half asserted below. The
 other half is that `.agents/skills/` is itself a project skill path -- Codex
 and Gemini CLI both document it, and Jetski reads it directly -- which is a
 property of those harnesses, cannot be checked from this tree, and is stated
@@ -187,29 +188,55 @@ class DescriptionReadingTest(unittest.TestCase):
 
 
 class ClaudeSkillLinksTest(unittest.TestCase):
+    def _check_link(self, root, link, target):
+        path = root / link
+        self.assertTrue(
+            path.exists() or path.is_symlink(),
+            f"{link} is missing; Claude Code scans only .claude/ and "
+            "would find no skills or rules in this checkout",
+        )
+        self.assertTrue(
+            path.is_symlink(),
+            f"{link} is not a symlink; Claude Code would read a second "
+            f"copy of the skills that drifts from {target}",
+        )
+        self.assertFalse(
+            os.path.isabs(os.readlink(path)),
+            f"{link} points at an absolute path, so it resolves only "
+            "in the checkout it was made in",
+        )
+        self.assertEqual(
+            path.resolve(),
+            (root / target).resolve(),
+            f"{link} resolves somewhere other than {target}",
+        )
+
     def test_claude_directories_are_relative_symlinks_into_dot_agents(self):
-        # One test rather than three: `os.readlink` raises on a path that is
-        # not a link, so a separate relative-path test would report the plain
-        # directory case -- the one the docstring calls a `git mv` away -- as
-        # an error with a traceback instead of the failure written below.
+        # One check method rather than three separate tests over REPO_ROOT:
+        # `os.readlink` raises on a path that is not a link, so a separate
+        # relative-path test would report a missing path or plain directory as
+        # an error with a traceback instead of the failure written above.
         for link, target in CLAUDE_LINKS.items():
             with self.subTest(link=link):
-                path = REPO_ROOT / link
-                self.assertTrue(
-                    path.is_symlink(),
-                    f"{link} is not a symlink; Claude Code would read a second "
-                    f"copy of the skills that drifts from {target}",
-                )
-                self.assertFalse(
-                    os.path.isabs(os.readlink(path)),
-                    f"{link} points at an absolute path, so it resolves only "
-                    "in the checkout it was made in",
-                )
-                self.assertEqual(
-                    path.resolve(),
-                    (REPO_ROOT / target).resolve(),
-                    f"{link} resolves somewhere other than {target}",
-                )
+                self._check_link(REPO_ROOT, link, target)
+
+    def test_a_missing_link_is_reported_as_missing_not_as_a_drifting_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / ".agents" / "skills").mkdir(parents=True)
+            with self.assertRaises(AssertionError) as ctx:
+                self._check_link(root, ".claude/skills", ".agents/skills")
+            self.assertIn(".claude/skills is missing", str(ctx.exception))
+            self.assertNotIn("second copy", str(ctx.exception))
+
+    def test_a_plain_directory_is_reported_as_a_drifting_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / ".agents" / "skills").mkdir(parents=True)
+            (root / ".claude" / "skills").mkdir(parents=True)
+            with self.assertRaises(AssertionError) as ctx:
+                self._check_link(root, ".claude/skills", ".agents/skills")
+            self.assertIn("is not a symlink", str(ctx.exception))
 
 
 class SkillFrontmatterTest(unittest.TestCase):
