@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -331,23 +332,30 @@ def resolve_kubeconfig_flags(argv: list[str]) -> list[str]:
     in kubectl's own precedence, so it has to be translated here for the same
     reason the environment is: the path names a file only this pod has. The
     broker resolves whichever it receives through the same regeneration.
+    Stops at `--`, as `kubectl_context_flag` does: a `--kubeconfig` after it
+    belongs to the command `kubectl exec` runs, names no file of this pod's,
+    and is passed through untouched.
     """
     rewritten = list(argv)
     for index, argument in enumerate(rewritten):
-        if argument == "--kubeconfig" and index + 1 < len(rewritten):
+        if argument == END_OF_FLAGS:
+            break
+        if argument == KUBECONFIG_FLAG and index + 1 < len(rewritten):
             rewritten[index + 1] = kubeconfig_context(rewritten[index + 1])
-        elif argument.startswith("--kubeconfig="):
+        elif argument.startswith(f"{KUBECONFIG_FLAG}="):
             _, _, value = argument.partition("=")
-            rewritten[index] = f"--kubeconfig={kubeconfig_context(value)}"
+            rewritten[index] = f"{KUBECONFIG_FLAG}={kubeconfig_context(value)}"
     return rewritten
 
 
 def names_kubeconfig_flag(argv: list[str]) -> bool:
-    """Whether argv carries a `--kubeconfig`, in either spelling."""
-    return any(
-        argument == KUBECONFIG_FLAG or argument.startswith(f"{KUBECONFIG_FLAG}=")
-        for argument in argv
-    )
+    """Whether argv carries a `--kubeconfig` of its own, in either spelling."""
+    for argument in argv:
+        if argument == END_OF_FLAGS:
+            return False
+        if argument == KUBECONFIG_FLAG or argument.startswith(f"{KUBECONFIG_FLAG}="):
+            return True
+    return False
 
 
 def kubectl_context_flag(argv: list[str]) -> str | None:
@@ -399,6 +407,26 @@ def _card_context_path(task: str) -> Path:
     return kubeconfig_dir() / CARD_CONTEXT_DIR_NAME / f"{task}{CARD_CONTEXT_SUFFIX}"
 
 
+def _replace_file(path: Path, text: str) -> None:
+    """Write `text` to `path` so a concurrent reader sees the old file or the new.
+
+    A plain truncate-and-write leaves a window where the file is empty: a
+    kubectl reading the card pin in it falls back to the host with exit 0, and
+    one exporting the per-target kubeconfig fails as unreadable. Both are the
+    failures this module exists to prevent, so the file is staged beside its
+    destination and renamed over it.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, staged = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(text)
+        os.replace(staged, path)
+    except BaseException:
+        Path(staged).unlink(missing_ok=True)
+        raise
+
+
 def record_card_context(context: str) -> bool:
     """Make `context` the card's default for a kubectl that names no cluster.
 
@@ -416,8 +444,7 @@ def record_card_context(context: str) -> bool:
         return False
     path = _card_context_path(task)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(context, encoding="utf-8")
+        _replace_file(path, context)
     except OSError as exc:
         print(f"credential proxy: could not record the card's context in {path}: {exc}", file=sys.stderr)
         return False
@@ -491,8 +518,7 @@ def land_implicit_kubeconfig(generated: str) -> None:
     path = per_target_kubeconfig_path(target)
     written = True
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(generated, encoding="utf-8")
+        _replace_file(path, generated)
     except OSError as exc:
         written = False
         print(f"credential proxy: could not write {path}: {exc}", file=sys.stderr)

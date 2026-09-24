@@ -314,6 +314,15 @@ class TestAContextLessGetCredentialsLandsAFile(ContextLessTestCase):
         self.assertTrue(destination.is_file())
         self.assertFalse(self.expected_file.exists())
 
+    def test_a_second_fetch_replaces_the_file_and_leaves_nothing_staged(self):
+        # Staged beside the destination and renamed over it, so a reader never
+        # sees it half-written, and no staging file is left behind.
+        self.expected_file.parent.mkdir(parents=True)
+        self.expected_file.write_text("stale", encoding="utf-8")
+        self.fetch(self.environ())
+        self.assertEqual(SEEDED_KUBECONFIG, self.expected_file.read_text(encoding="utf-8"))
+        self.assertEqual([self.expected_file], list(self.expected_file.parent.iterdir()))
+
 
 class TestKubectlContextFlagNamesTheCluster(ContextLessTestCase):
     """`--context` used to end in "context was not found" (#1968, step 37)."""
@@ -390,6 +399,19 @@ class TestAKanbanCardFollowsItsOwnGetCredentials(ContextLessTestCase):
             self.environ(HERMES_KANBAN_TASK=CARD),
         )
         self.assertEqual(GKE_CONTEXT, payload["kubeconfigContext"])
+
+    def test_a_kubeconfig_after_the_separator_is_the_remote_commands(self):
+        # `kubectl exec pod -- tool --kubeconfig f` names no kubeconfig of
+        # kubectl's: it neither unpins the card nor is read from this pod.
+        self.fetch(self.environ(HERMES_KANBAN_TASK=CARD))
+        remote = "/nowhere/remote.yaml"
+        captured = self.send(
+            ["kubectl", "exec", "pod/x", "--", "tool", "--kubeconfig", remote],
+            self.environ(HERMES_KANBAN_TASK=CARD),
+        )
+        self.assertEqual(0, captured["exit_code"])
+        self.assertEqual(SEEDED_CONTEXT, captured["payload"]["kubeconfigContext"])
+        self.assertEqual(remote, captured["payload"]["argv"][-1])
 
     def test_an_explicit_destination_records_no_pin(self):
         # gcloud leaves the default kubeconfig alone when told to write

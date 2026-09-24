@@ -735,12 +735,14 @@ Consequences:
   `KUBECONFIG` or `--kubeconfig` pointing at a per-target file, which keep
   precedence; a `--context` that is a GKE context name, forwarded as that name;
   or, inside a kanban card only, nothing at all — a context-less `kubectl` there
-  follows the card's own last context-less `get-credentials`, as `gcloud` would
-  on a workstation, and the pin is keyed by the card's task id so it never
-  becomes another card's or the pod's default. A context-less `get-credentials`
-  also asks for its file back and lands it at
-  `$HERMES_HOME/.kubeconfigs/kubeconfig_<project>_<cluster>_<location>.yaml`,
-  printing the `export KUBECONFIG=` and `--context` lines that reach it.
+  follows the cluster of the card's own last `get-credentials` that was given no
+  `KUBECONFIG` destination, as `gcloud` would on a workstation, and the pin is
+  keyed by the card's task id so it never becomes another card's or the pod's
+  default. A `get-credentials` given no `KUBECONFIG` destination also asks for
+  its file back and lands it at
+  `${HERMES_HOME:-/opt/data}/.kubeconfigs/kubeconfig_<project>_<cluster>_<location>.yaml`.
+  Outside a card it prints the `export KUBECONFIG=` and `--context` lines that
+  reach that cluster; inside one it says the card's kubectl now reads it.
 - Proxied `kubectl` reads get `--request-timeout=30s` and a 60-second deadline,
   so an unreachable control plane fails in seconds rather than holding a broker
   worker for `kubectl`'s 300-second client default. Commands that are meant to
