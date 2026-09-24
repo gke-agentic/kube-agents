@@ -1325,6 +1325,28 @@ exit {exit_code}
         proc = self._acquire_then_exit(home_dir, upstream_url, "0.3.0", exit_code=1)
 
         self.assertEqual(proc.returncode, 1)
+        self.assertIn("Nothing was applied, so", proc.stdout)
+        self.assertIn("was returned to", proc.stdout)
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+
+    def test_a_run_that_fails_after_step3_secret_backfill_does_not_say_nothing_was_applied(self):
+        """Step 3 (`backfill_session_kv_keys` / `backfill_sandbox_ssh_key`) patches
+        `platform-agent-secrets` before `UPGRADE_APPLY_STARTED` is raised, so a
+        refusal after step 3 still restores the checkout to the old release but
+        must not claim 'Nothing was applied' to the cluster."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+
+        proc = self._acquire_then_exit(
+            home_dir,
+            upstream_url,
+            "0.3.0",
+            exit_code=1,
+            between='SESSION_KV_KEYS_PATCHED="true"',
+        )
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertNotIn("Nothing was applied", proc.stdout)
+        self.assertIn("The new release was not applied (after reconciling Secret keys in step 3)", proc.stdout)
         self.assertIn("was returned to", proc.stdout)
         self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
 
@@ -1729,6 +1751,20 @@ exit {exit_code}
         self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
         self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), str(clone_dir))
         self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+
+        subprocess.run(["git", "-C", str(clone_dir), "checkout", "--quiet", "0.2.0"], check=True)
+        rel_env = os.path.relpath(clone_dir / "install.env", neutral)
+        rel_proc = self._acquire_through_a_real_pipe(
+            home_dir,
+            upstream_url,
+            "0.3.0",
+            cwd=neutral,
+            extra_env={"KUBE_AGENTS_INSTALL_ENV": rel_env},
+        )
+        self.assertEqual(rel_proc.returncode, 0, rel_proc.stderr)
+        self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
+        self.assertEqual(self._reported(rel_proc, "INSTALL_CHECKOUT"), str(clone_dir))
+        self.assertEqual(self._reported(rel_proc, "REPO_DIR"), str(clone_dir))
 
     def test_a_home_checkout_without_install_env_is_not_moved(self):
         """A clone in ~/kube-agents carrying no install.env is not detached onto the release before main() refuses."""

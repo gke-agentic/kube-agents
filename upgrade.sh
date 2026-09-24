@@ -163,7 +163,11 @@ restore_moved_checkout() {
   # already failed, and a checkout the operator has since edited is theirs to
   # resolve. Say so either way rather than restoring silently.
   if git -C "$MOVED_CHECKOUT_DIR" checkout --quiet "$target" 2>/dev/null; then
-    print_info "Nothing was applied, so ${MOVED_CHECKOUT_DIR} was returned to ${what}."
+    if [ "${SESSION_KV_KEYS_PATCHED:-false}" = "true" ] || [ "${SANDBOX_KEYS_PATCHED:-false}" = "true" ]; then
+      print_info "The new release was not applied (after reconciling Secret keys in step 3), so ${MOVED_CHECKOUT_DIR} was returned to ${what}."
+    else
+      print_info "Nothing was applied, so ${MOVED_CHECKOUT_DIR} was returned to ${what}."
+    fi
   else
     print_warning "Could not return ${MOVED_CHECKOUT_DIR} to ${what}; it is still on the revision this run checked out. 'git -C ${MOVED_CHECKOUT_DIR} checkout ${target}' undoes it."
   fi
