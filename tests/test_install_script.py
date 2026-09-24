@@ -2173,7 +2173,11 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
             env_file = pathlib.Path(tmp) / "install.env"
             env_file.write_text(contents)
             full_env = get_isolated_test_env(
-                overrides={"KUBE_AGENTS_INSTALL_ENV": str(env_file)}
+                overrides={
+                    "KUBE_AGENTS_INSTALL_ENV": str(env_file),
+                    "MEMORY": "",
+                    "MEMORY_PROVIDER": "",
+                }
             )
             return subprocess.run(
                 ["bash", "-c",

@@ -284,11 +284,13 @@ resolve_state_location() {
   fi
 }
 
-# Locate the install's configuration in upgrade.sh's order:
+# Locate the install's configuration:
 #   1. KUBE_AGENTS_INSTALL_ENV when explicitly set
 #   2. The checkout this script runs from (when it has one)
 #   3. The working directory the operator invoked it from
-#   4. The install checkout install.sh leaves in $HOME/kube-agents
+#   4. The install checkout install.sh leaves in $HOME/kube-agents (consulted
+#      even when candidate_repo_dir is set, unlike upgrade.sh, because a piped
+#      teardown clones into a temporary directory before calling this)
 # Defined above main() rather than sourced from installer_common.sh because the
 # --source-ref arm hands over before any checkout with installer_common.sh is
 # sourced, and because the lookup itself decides which checkout's configuration

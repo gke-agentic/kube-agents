@@ -1274,6 +1274,24 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertIn(f"so this preview is trusting the tag in {clone_dir}", combined)
         self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
 
+    def test_an_adopted_checkout_at_a_commit_sha_skips_remote_tag_verification(self):
+        """A 40-hex commit SHA is self-verifying (`! ref_is_commit_sha "$expected_ref"`),
+        so `verify_local_source_ref` skips `remote_release_tag_commit` even when
+        `SOURCES_ADOPTED_CHECKOUT="true"` and `KUBE_AGENTS_REPO_URL` is unreachable."""
+        home_dir, clone_dir, _, commits = self._existing_clone_fixture("0.2.0")
+        missing_remote = str(home_dir.parent / "does-not-exist.git")
+
+        proc = self._acquire_from_outside(home_dir, missing_remote, commits["0.2.0"])
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        combined = proc.stdout + proc.stderr
+        self.assertNotIn("Could not ask", combined)
+        self.assertIn(
+            f"Verified upgrade scripts and image ref resolve to commit {commits['0.2.0']}.",
+            combined,
+        )
+        self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+
     def _acquire_then_exit(
         self, home_dir, upstream_url, requested_ref, exit_code, apply_started=False, between=""
     ):

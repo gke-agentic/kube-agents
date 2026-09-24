@@ -2344,6 +2344,36 @@ class HelmReleaseSelfHealingTest(unittest.TestCase):
         self.assertEqual(proc.stdout.strip(), "")
 
 
+    def test_missing_gke_dns_endpoint_helper_warns_and_installs_stub(self):
+        """When `gke_dns_endpoint.sh` is absent beside `installer_common.sh`,
+        sourcing warns on stderr and defines a stub `gke_dns_endpoint_flag`
+        that clears `GKE_DNS_ENDPOINT_FLAG` rather than aborting."""
+        with tempfile.TemporaryDirectory() as tmp:
+            isolated_common = pathlib.Path(tmp) / "installer_common.sh"
+            isolated_common.write_text(_INSTALLER_COMMON.read_text(), encoding="utf-8")
+            defaults_file = _REPO_ROOT / "install.defaults.env"
+            proc = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'KUBE_AGENTS_INSTALL_DEFAULTS="{defaults_file}" source "{isolated_common}"\n'
+                    'GKE_DNS_ENDPOINT_FLAG="stale"\n'
+                    'gke_dns_endpoint_flag test-cluster us-central1 test-project\n'
+                    'echo "FLAG=[$GKE_DNS_ENDPOINT_FLAG]"\n',
+                ],
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(),
+                cwd=tmp,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn(
+            f"Cannot find {tmp}/gke_dns_endpoint.sh; reaching clusters over their IP endpoint.",
+            proc.stderr,
+        )
+        self.assertIn("FLAG=[]", proc.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
 

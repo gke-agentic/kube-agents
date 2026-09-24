@@ -1429,7 +1429,7 @@ live_hindsight_state() {
     # `trap - ERR` inside the substitution for the bash 3.2 reason the probes
     # above give -- a non-zero exit here is the tested condition, not an abort.
     out="$({ trap - ERR; kubectl get "$kind" "$name" -n "$namespace" \
-      --request-timeout=10s --ignore-not-found -o name; } 2>&1)" || rc=$?
+      --request-timeout="${KUBECTL_PROBE_REQUEST_TIMEOUT}" --ignore-not-found -o name; } 2>&1)" || rc=$?
     if [ "$rc" -eq 0 ]; then
       if printf '%s\n' "$out" | grep -qE "(^|/)${name}\$"; then
         LIVE_HINDSIGHT_STATE="present"

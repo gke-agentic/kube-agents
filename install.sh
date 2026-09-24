@@ -715,13 +715,12 @@ parse_args() {
       # probe the live cluster before planning hindsight-postgresql away.
       --memory=*)
         PARAM_MEMORY="${1#*=}"
-        if [ -z "$PARAM_MEMORY" ]; then
+        if [ -n "$PARAM_MEMORY" ]; then
+          PARAM_MEMORY_EXPLICIT="true"
+        else
           print_error "--memory= was given an empty value."
           print_info "Pass --memory=off, --memory=file, or --memory=hindsight, or omit the flag to keep the recorded setting."
           exit 1
-        fi
-        if [ -n "$PARAM_MEMORY" ]; then
-          PARAM_MEMORY_EXPLICIT="true"
         fi
         shift
         ;;

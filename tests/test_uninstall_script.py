@@ -954,7 +954,7 @@ class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
             )
             self.assertIn("the-installs-cluster in the-installs-project (europe-north1)", combined)
             self.assertNotIn("the-machines-own-project", combined)
-            self.assertNotIn("is a guess", combined)
+            self.assertNotIn("is installer_common.sh's default, not this install's", combined)
 
     def test_a_teardown_with_nothing_to_read_says_what_it_is_guessing(self):
         """It is still allowed to run on defaults -- `./uninstall.sh` in a
@@ -996,7 +996,7 @@ class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
             combined = proc.stdout + proc.stderr
             self.assertEqual(proc.returncode, 0, combined)
             self.assertIn("named-cluster in named-project (named-region)", combined)
-            self.assertNotIn("is a guess", combined)
+            self.assertNotIn("is installer_common.sh's default, not this install's", combined)
             self.assertNotIn("came from gcloud's active configuration", combined)
 
     def test_the_resolution_order_prefers_explicit_then_repo_then_pwd_over_home(self):
