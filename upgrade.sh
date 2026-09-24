@@ -1070,9 +1070,12 @@ acquire_upgrade_sources() {
       # later. refresh_existing_clone is pinned byte-equal to install.sh's, so
       # the bookkeeping sits here rather than inside it: install.sh moves a
       # clone it made, this moves the operator's own directory.
-      local prev_head="" prev_branch="" now_head=""
+      local prev_head="" prev_branch="" now_head="" had_ref="false"
       prev_head="$(git -C "$resolved_dir" rev-parse --verify HEAD 2>/dev/null || echo "")"
       prev_branch="$(git -C "$resolved_dir" symbolic-ref --short -q HEAD || true)"
+      if [ -n "$expected_ref" ] && git -C "$resolved_dir" rev-parse --verify "${expected_ref}^{commit}" >/dev/null 2>&1; then
+        had_ref="true"
+      fi
       refresh_existing_clone "$resolved_dir" "$expected_ref"
       now_head="$(git -C "$resolved_dir" rev-parse --verify HEAD 2>/dev/null || echo "")"
       if [ -n "$prev_head" ] && [ -n "$now_head" ] && [ "$prev_head" != "$now_head" ]; then
@@ -1080,7 +1083,9 @@ acquire_upgrade_sources() {
         MOVED_CHECKOUT_PREV_HEAD="$prev_head"
         MOVED_CHECKOUT_PREV_BRANCH="$prev_branch"
       fi
-      SOURCES_ADOPTED_CHECKOUT="true"
+      if [ "$had_ref" = "true" ]; then
+        SOURCES_ADOPTED_CHECKOUT="true"
+      fi
     elif [ -n "$found_checkout" ] && clone_head_is_ref "$found_checkout" "$expected_ref"; then
       resolved_dir="$found_checkout"
       SOURCES_ADOPTED_CHECKOUT="true"

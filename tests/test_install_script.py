@@ -6822,15 +6822,23 @@ class ToggleValuesAreValidatedTest(unittest.TestCase):
             "resolve_shared_defaults\n"
             'echo "RESOLVED=[$PARAM_MEMORY] EXPLICIT=[$PARAM_MEMORY_EXPLICIT]"\n'
         )
-        env = get_isolated_test_env()
-        env["MEMORY"] = "hindsight"
-        proc = subprocess.run(
-            ["bash", "-c", script],
-            capture_output=True,
-            text=True,
-            env=env,
-            cwd=str(_REPO_ROOT),
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            empty_env = pathlib.Path(tmp) / "install.env"
+            empty_env.write_text("", encoding="utf-8")
+            env = get_isolated_test_env(
+                overrides={
+                    "HOME": tmp,
+                    "KUBE_AGENTS_INSTALL_ENV": str(empty_env),
+                    "MEMORY": "hindsight",
+                }
+            )
+            proc = subprocess.run(
+                ["bash", "-c", script],
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=tmp,
+            )
         self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
         self.assertIn("RESOLVED=[file] EXPLICIT=[true]", proc.stdout)
 

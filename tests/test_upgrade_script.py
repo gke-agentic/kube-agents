@@ -1329,6 +1329,58 @@ exit {exit_code}
         self.assertIn("was returned to", proc.stdout)
         self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
 
+    def test_a_run_that_fails_before_applying_returns_a_branch_checkout_to_its_branch(self):
+        """When `$HOME/kube-agents` was sitting on a branch (`main`) rather than
+        detached at a tag, `restore_moved_checkout` returns it to that branch
+        and reports `branch '<name>'`."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture(
+            "0.2.0", full_clone=True
+        )
+        subprocess.run(
+            ["git", "-C", str(clone_dir), "checkout", "-B", "main", "0.2.0", "--quiet"],
+            check=True,
+        )
+
+        proc = self._acquire_then_exit(home_dir, upstream_url, "0.3.0", exit_code=1)
+
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("was returned to branch 'main'", proc.stdout)
+        branch = subprocess.run(
+            ["git", "-C", str(clone_dir), "symbolic-ref", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        self.assertEqual(branch, "main")
+        self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+
+    def test_an_adopted_checkout_whose_tag_was_fetched_by_this_run_sets_sources_fetched(self):
+        """When `refresh_existing_clone` had to fetch the requested tag from
+        `KUBE_AGENTS_REPO_URL` because `$HOME/kube-agents` did not already carry
+        it, `acquire_upgrade_sources` leaves `SOURCES_ADOPTED_CHECKOUT=false` so
+        `verify_local_source_ref` does not make a redundant `git ls-remote` call
+        and cannot refuse the checkout as 'not fetched by this run'."""
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+
+        proc = self._acquire_then_exit(
+            home_dir,
+            upstream_url,
+            "0.3.0",
+            exit_code=0,
+            between=(
+                'echo "ADOPTED=$SOURCES_ADOPTED_CHECKOUT"\n'
+                'KUBE_AGENTS_REPO_URL="file:///nonexistent-after-fetch"\n'
+                'verify_local_source_ref "$repo_dir" "0.3.0"'
+            ),
+        )
+
+        self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+        self.assertIn("ADOPTED=false", proc.stdout)
+        self.assertIn(
+            f"Verified upgrade scripts and image ref resolve to commit {commits['0.3.0']}.",
+            proc.stdout,
+        )
+
     def test_a_run_that_fails_after_step3_secret_backfill_does_not_say_nothing_was_applied(self):
         """Step 3 (`backfill_session_kv_keys` / `backfill_sandbox_ssh_key`) patches
         `platform-agent-secrets` before `UPGRADE_APPLY_STARTED` is raised, so a
@@ -2400,6 +2452,7 @@ class PipedUpgradeResolvesItsSourcesTest(unittest.TestCase):
                     overrides={
                         "KUBE_AGENTS_INSTALL_ENV": str(empty_install_env),
                         "KUBE_AGENTS_LOCK_FILE": str(lock_file),
+                        "IMAGE_TAG": "",
                     },
                     bin_dir=str(stub_bin),
                 ),
@@ -2436,6 +2489,7 @@ class ExplicitInstallEnvPointerTest(unittest.TestCase):
         overrides = {
             "KUBE_AGENTS_INSTALL_ENV": str(install_env),
             "KUBE_AGENTS_LOCK_FILE": str(pathlib.Path(cwd) / "upgrade.lock"),
+            "IMAGE_TAG": "",
         }
         if home is not None:
             overrides["HOME"] = str(home)

@@ -345,9 +345,6 @@ handoff_env_names_another_install() {
 # for install B. Same split as upgrade.sh: a real run refuses, a dry-run warns.
 check_uninstall_coordinate_conflicts() {
   local env_file="$1"
-  # Optional, and printed after the generic ways out: the arms differ in what
-  # they read the file FOR, so they differ in what gets an operator past this.
-  local extra_remedy="${2:-}"
   local coordinate_conflicts=""
   if [ -n "$PARAM_PROJECT_ID" ] && [ -n "${PROJECT_ID:-}" ] && [ "$PARAM_PROJECT_ID" != "$PROJECT_ID" ]; then
     coordinate_conflicts="${coordinate_conflicts}    --gcp-project-id=${PARAM_PROJECT_ID}, but PROJECT_ID=${PROJECT_ID}"$'\n'
@@ -366,7 +363,6 @@ check_uninstall_coordinate_conflicts() {
       print_error "Refusing to tear down: ${env_file} records a different install than the flags name."
       printf '%s' "$coordinate_conflicts" >&2
       print_info "Teardown resolves its Terraform state backend and regenerates terraform.tfvars from that file, so this would read one install's configuration while tearing down another. Point KUBE_AGENTS_INSTALL_ENV at the install.env of the install you are tearing down, run from its checkout, or drop the flags that disagree with it."
-      [ -z "$extra_remedy" ] || print_info "$extra_remedy"
       exit 1
     fi
   fi
