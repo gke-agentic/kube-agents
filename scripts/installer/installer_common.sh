@@ -77,6 +77,9 @@ else
 fi
 unset _gke_dns_endpoint_helper
 
+# Request timeout for kubectl probes against live clusters in the installer.
+readonly KUBECTL_PROBE_REQUEST_TIMEOUT="10s"
+
 # ─── Helm Release Management Defaults ─────────────────────────────────────────
 # Operation timeout for an in-flight Helm install/upgrade across deploy workflows (10m).
 readonly HELM_OPERATION_TIMEOUT_DEFAULT=600
@@ -95,6 +98,15 @@ readonly KUBE_AGENTS_HELM_RELEASE="kube-agents"
 # shellcheck disable=SC2034  # read by install.sh and upgrade.sh
 readonly KUBE_AGENTS_OPERATOR_DEPLOYMENT="kube-agents-controller-manager"
 readonly PLATFORM_AGENT_DEPLOYMENT="platform-agent-gateway"
+# The Hermes container in that Deployment's pod. The pod runs three and sets no
+# default-container annotation, so `kubectl exec` without -c lands on whichever
+# is first.
+# shellcheck disable=SC2034  # read by install.sh
+readonly PLATFORM_AGENT_CONTAINER="platform-agent"
+# The Hermes profile the Platform Agent answers on. A bare `hermes` reaches the
+# `default` profile instead -- the Planning Agent front door.
+# shellcheck disable=SC2034  # read by install.sh
+readonly PLATFORM_AGENT_HERMES_PROFILE="platform"
 readonly PLATFORM_AGENT_SECRET="platform-agent-secrets"
 # The chart's LiteLLM Deployment, and the objects the operator composes from
 # the PlatformAgent's name (platform-agent, which the composition leaves at
@@ -1609,7 +1621,8 @@ write_tfvars_from_state() {
       # just destroyed black-holes TCP instead of refusing, and eight keys
       # times a hung connect stalls the install for minutes.
       secret_val="$({ kubectl get secret "${PLATFORM_AGENT_SECRET}" -n "${NAMESPACE:-$DEFAULT_NAMESPACE}" \
-        --request-timeout=10s \
+        --context "$expected_ctx" \
+        --request-timeout="${KUBECTL_PROBE_REQUEST_TIMEOUT}" \
         -o jsonpath="{.data.${secret_key}}" 2>/dev/null || true; } | base64 --decode 2>/dev/null || true)"
       if [ -n "$secret_val" ]; then
         export "${secret_key}=${secret_val}"
@@ -1659,7 +1672,13 @@ write_tfvars_from_state() {
     print_info "SKIP_CERT_MANAGER=true: the composition will not install cert-manager. The operator webhooks need one serving before the apply."
   elif [ "$create_cluster" = "false" ] && command -v kubectl >/dev/null 2>&1; then
     # Credentials were fetched above, on the same adoption branch.
-    if kubectl get deployment cert-manager -n cert-manager >/dev/null 2>&1; then
+    # Check that current-context actually points to this cluster; a stale context
+    # must not probe another cluster and wrongly disable cert-manager on this one.
+    local cert_expected_ctx
+    cert_expected_ctx="$(gke_context_name)"
+    if [ "$(kubectl config current-context 2>/dev/null || true)" = "$cert_expected_ctx" ] &&
+      kubectl get deployment cert-manager -n cert-manager --context "$cert_expected_ctx" \
+        --request-timeout="${KUBECTL_PROBE_REQUEST_TIMEOUT}" >/dev/null 2>&1; then
       # The Deployment alone cannot say whose it is. On a retry after an
       # apply that died past the cert-manager release, and on every
       # upgrade.sh regeneration of an existing-cluster install, the
