@@ -481,11 +481,16 @@ class UpgradeRunContractTest(unittest.TestCase):
     def test_tfvars_generation_is_snapshotted_before_writing(self):
         """write_tfvars_from_state runs before full's and harness's refusals, so main() must snapshot first while still regenerating tfvars across all modes so the next full apply agrees with the release."""
         source = _UPGRADE_SH.read_text()
-        snap = 'snapshot_moved_checkout_tfvars "${repo_dir}/terraform/examples/full-install/terraform.tfvars"'
-        write = 'write_tfvars_from_state "${repo_dir}/terraform/examples/full-install/terraform.tfvars" "$PARAM_IMAGE_TAG"'
+        # main() names the path once, so the snapshot and the write cannot
+        # drift onto different files.
+        path = 'local tfvars_file="${repo_dir}/terraform/examples/full-install/terraform.tfvars"'
+        snap = 'snapshot_moved_checkout_tfvars "$tfvars_file"'
+        write = 'write_tfvars_from_state "$tfvars_file" "$PARAM_IMAGE_TAG"'
         dispatch = 'case "$PARAM_UPGRADE_MODE" in'
+        self.assertEqual(source.count(path), 1)
         self.assertIn(snap, source)
         self.assertIn(write, source)
+        self.assertLess(source.index(path), source.index(snap))
         self.assertLess(source.index(snap), source.index(write))
         # Two `case "$PARAM_UPGRADE_MODE"` blocks: parse-time validation, then
         # the dispatch into the mode arms. The write has to come before the
@@ -1049,8 +1054,8 @@ class UpgradeReusesTheInstallCheckoutTest(unittest.TestCase):
         commits = {tag: git("rev-parse", f"{tag}^{{commit}}", cwd=work_dir) for tag in ("0.2.0", "0.3.0")}
 
         if full_clone:
-            if checked_out_tag == "0.3.0":
-                git("fetch", "--quiet", upstream_url, "+refs/tags/0.3.0:refs/tags/0.3.0", cwd=clone_dir)
+            # The full clone is taken before 0.3.0 is pushed, so it can only be
+            # checked out at 0.2.0 — the one tag every full_clone caller uses.
             git("checkout", "--quiet", "--detach", checked_out_tag, cwd=clone_dir)
         else:
             refspec = f"+refs/tags/{checked_out_tag}:refs/tags/{checked_out_tag}"

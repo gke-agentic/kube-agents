@@ -1262,7 +1262,12 @@ class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
     def test_the_resolution_order_prefers_explicit_then_repo_then_pwd_over_home(self):
         """Pins every arm of resolve_uninstall_env_file in precedence order:
         KUBE_AGENTS_INSTALL_ENV > repo_dir/install.env > $(pwd)/install.env >
-        $HOME/kube-agents/install.env."""
+        $HOME/kube-agents/install.env.
+
+        Only case 1 is a non-checkout run, so only it contests $HOME. Cases 2
+        and 3 supply repo_dir/install.env, which makes them checkout runs, and
+        a checkout run never consults $HOME at all (pinned by
+        test_a_checkout_run_without_its_own_install_env_does_not_reach_into_home)."""
         with tempfile.TemporaryDirectory() as tmp:
             home = pathlib.Path(tmp) / "home"
             (home / "kube-agents").mkdir(parents=True)
@@ -1282,7 +1287,7 @@ class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
             )
             self.assertIn("from-pwd in p (r)", proc_pwd.stdout + proc_pwd.stderr)
 
-            # 2. repo_dir/install.env beats $(pwd)/install.env and $HOME/kube-agents/install.env
+            # 2. repo_dir/install.env beats $(pwd)/install.env (a checkout run: $HOME is not consulted)
             proc_repo = self._preview(
                 tmp,
                 home,
@@ -1291,7 +1296,7 @@ class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
             )
             self.assertIn("from-repo in p (r)", proc_repo.stdout + proc_repo.stderr)
 
-            # 3. KUBE_AGENTS_INSTALL_ENV beats all three
+            # 3. KUBE_AGENTS_INSTALL_ENV beats repo_dir/install.env and $(pwd)/install.env
             proc_explicit = self._preview(
                 tmp,
                 home,

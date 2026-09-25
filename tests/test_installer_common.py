@@ -2475,6 +2475,8 @@ class HelmReleaseSelfHealingTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(proc.stdout.strip(), "")
 
+class GkeDnsEndpointHelperFallbackTest(unittest.TestCase):
+    """Sourcing installer_common.sh without its gke_dns_endpoint.sh sibling."""
 
     def test_missing_gke_dns_endpoint_helper_warns_and_installs_stub(self):
         """When `gke_dns_endpoint.sh` is absent beside `installer_common.sh`,

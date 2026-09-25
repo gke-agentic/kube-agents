@@ -2446,9 +2446,19 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
             'if [ "$PARAM_MEMORY_EXPLICIT" = "true" ] || '
             '[ "$memory_choice" != "$memory_seed_choice" ]; then',
         }
+        # Any spelling that sets it true — quoted or not, exported, or sharing
+        # a line with other statements — not only the one this was written
+        # against. One that shares a line has no guard line of its own above
+        # it, so it is reported rather than silently skipped.
+        assignment = re.compile(r"""(?:^|[\s;])(?:export\s+)?PARAM_MEMORY_EXPLICIT=(["']?)true\1(?=\s|;|$)""")
         unguarded = []
+        seen = 0
         for index, line in enumerate(lines):
+            if line.lstrip().startswith("#") or not assignment.search(line):
+                continue
+            seen += 1
             if line.strip() != 'PARAM_MEMORY_EXPLICIT="true"':
+                unguarded.append((index + 1, line.strip()))
                 continue
             preceding = next(
                 (
@@ -2461,6 +2471,7 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
             if preceding not in guards:
                 unguarded.append((index + 1, preceding))
 
+        self.assertGreater(seen, 0, "the enumerator found no assignment at all")
         self.assertEqual(
             unguarded,
             [],

@@ -1529,7 +1529,8 @@ main() {
   # write_tfvars_from_state overwrites it: if full or harness later refuses
   # before UPGRADE_APPLY_STARTED, restore_moved_checkout puts the previous
   # tfvars back (or removes the newly created one) alongside the previous commit.
-  snapshot_moved_checkout_tfvars "${repo_dir}/terraform/examples/full-install/terraform.tfvars"
+  local tfvars_file="${repo_dir}/terraform/examples/full-install/terraform.tfvars"
+  snapshot_moved_checkout_tfvars "$tfvars_file"
   # NAMESPACE steers the generator's Secret-recovery reads (install.env omits
   # credentials when PERSIST_SECRETS_ON_DISK=false; the live Secret has them).
   #
@@ -1541,7 +1542,7 @@ main() {
   # deliberately does not opt in.
   NAMESPACE="$target_namespace" \
     KUBE_AGENTS_REQUIRE_MEMORY_ANSWER=true \
-    write_tfvars_from_state "${repo_dir}/terraform/examples/full-install/terraform.tfvars" "$PARAM_IMAGE_TAG"
+    write_tfvars_from_state "$tfvars_file" "$PARAM_IMAGE_TAG"
 
   if [ "$PARAM_PLAN" = "true" ]; then
     print_step "4. Planning (read-only)"
@@ -1617,8 +1618,7 @@ main() {
       # minter against a key with no ENABLED version would wedge the apply on
       # the minter's readiness until the helm timeout fails the upgrade.
       # Refuse up front instead and name the two ways out.
-      if grep -q '^enable_github_minter = true$' \
-        "${repo_dir}/terraform/examples/full-install/terraform.tfvars" 2>/dev/null; then
+      if grep -q '^enable_github_minter = true$' "$tfvars_file" 2>/dev/null; then
         minter_enabled_version="$(kms_key_enabled_version "${KMS_KEY:-$DEFAULT_KMS_KEY}" \
           "${KMS_KEYRING:-$DEFAULT_KMS_KEYRING}" "$(derive_kms_location "${REGION}")" "${PROJECT_ID}")"
         if [ -z "$minter_enabled_version" ]; then
