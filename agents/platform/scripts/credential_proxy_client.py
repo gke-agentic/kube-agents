@@ -57,19 +57,37 @@ DEFAULT_HERMES_HOME = "/opt/data"
 KUBECONFIG_DIR_NAME = ".kubeconfigs"
 PER_TARGET_KUBECONFIG_NAME = "kubeconfig_{project}_{cluster}_{location}.yaml"
 
-# A kanban card's context pin: which cluster the card's last context-less
-# `get-credentials` fetched, so the card's next context-less `kubectl` reaches
-# it. Kept under the kubeconfig directory because sandbox_mirror already
-# excludes that from the profile mirror, keyed by the card's task id, and
-# holding a context name and nothing else.
-KANBAN_TASK_ENV = "HERMES_KANBAN_TASK"
-# The grammar session-command.sh's export_kanban_vars accepts, and for the
-# same reason: the value becomes a filename.
-_KANBAN_TASK_ID = re.compile(r"^t_[0-9a-f]+\Z")
-CARD_CONTEXT_DIR_NAME = "cards"
-CARD_CONTEXT_SUFFIX = ".context"
+# A shell's context pin: which cluster the last context-less `get-credentials`
+# in this command line fetched, so a context-less `kubectl` later in the same
+# line reaches it -- `get-credentials seeded-a && kubectl get ...`, the shape
+# #1968's workers ran. Kept under the kubeconfig directory because
+# sandbox_mirror already excludes that from the profile mirror, and holding a
+# context name and nothing else.
+#
+# Keyed on the shell process that ran the `get-credentials`: its pid and its
+# start time from /proc, so a recycled pid is a different key. Hermes runs
+# every terminal command in a fresh `bash -c`, so the pin lasts exactly one
+# command line: the next command, a resumed card, another worker, a
+# backgrounded `( ... ) &` subshell, all have a different shell and see none
+# of it.
+SHELL_CONTEXT_DIR_NAME = "shells"
+SHELL_CONTEXT_SUFFIX = ".context"
 # A GKE context name is under 200 characters; anything longer is not one.
-MAX_CARD_CONTEXT_BYTES = 512
+MAX_SHELL_CONTEXT_BYTES = 512
+PROC_ROOT = Path("/proc")
+# /proc/<pid>/stat fields, counted from the one after the `)` that closes the
+# command name (which may itself hold spaces and parentheses): the parent pid
+# is field 4 and the start time field 22, so 1 and 19 here.
+_STAT_PPID_INDEX = 1
+_STAT_STARTTIME_INDEX = 19
+# How far up a kubectl looks for a pin. `$(kubectl ...)`, a pipeline or a
+# loop puts one or two processes between the shell and kubectl; this is a
+# bound on a walk, not a depth anything reaches.
+MAX_SHELL_ANCESTORS = 16
+# The process names a pin may be keyed on: the shells a command line runs in.
+# The walk up from a kubectl stops at anything else.
+SHELL_COMMAND_NAMES = frozenset({"bash", "sh", "dash", "zsh", "ksh", "mksh", "ash"})
+_SHELL_CONTEXT_FILE = re.compile(r"^([0-9]+)-([0-9]+)\.context\Z")
 
 # kubectl stops reading its own flags here; what follows belongs to the
 # command `kubectl exec` or `kubectl debug` runs.
@@ -397,21 +415,91 @@ def per_target_kubeconfig_path(target: ClusterTarget) -> Path:
     )
 
 
-def kanban_task() -> str | None:
-    """The kanban card this shell works for, or None outside one."""
-    task = os.environ.get(KANBAN_TASK_ENV, "").strip()
-    return task if _KANBAN_TASK_ID.fullmatch(task) else None
+def _process_stat(pid: int) -> tuple[int, str, str] | None:
+    """`(parent pid, start time, command name)` for `pid`, or None once it has exited."""
+    try:
+        raw = (PROC_ROOT / str(pid) / "stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    close = raw.rfind(")")
+    comm = raw[raw.find("(") + 1 : close]
+    fields = raw[close + 1 :].split()
+    try:
+        return int(fields[_STAT_PPID_INDEX]), fields[_STAT_STARTTIME_INDEX], comm
+    except (IndexError, ValueError):
+        return None
 
 
-def _card_context_path(task: str) -> Path:
-    return kubeconfig_dir() / CARD_CONTEXT_DIR_NAME / f"{task}{CARD_CONTEXT_SUFFIX}"
+def _shell_keys() -> list[str]:
+    """`<pid>-<start time>` for the shells this process runs under, nearest first.
+
+    The walk starts at the parent and stops at the first process that is not a
+    shell, so a kubectl inside `$(...)`, a pipeline or a subshell of the line
+    that fetched still finds the line's pin, and nothing above the command
+    line -- sshd, the Hermes process, an entrypoint script that launched it --
+    is ever a key: a pin there would outlive the line, which is #1799 again.
+    A `get-credentials` records under the first key, so one whose parent is not
+    a shell (`timeout 60 gcloud ...`) records nothing.
+    """
+    keys: list[str] = []
+    pid = os.getppid()
+    for _ in range(MAX_SHELL_ANCESTORS):
+        if pid <= 1:
+            break
+        stat = _process_stat(pid)
+        if stat is None or stat[2] not in SHELL_COMMAND_NAMES:
+            break
+        keys.append(f"{pid}-{stat[1]}")
+        pid = stat[0]
+    return keys
+
+
+def _own_key() -> str | None:
+    """This process's own key, which is its shell's when the shell exec'd it.
+
+    bash replaces itself with the last command of a `-c` string, an `eval` or a
+    subshell instead of forking it, so in `get-credentials x ; kubectl ...` the
+    kubectl *is* the shell that ran the get-credentials: same pid, same start
+    time, and a parent above the command line.
+    """
+    pid = os.getpid()
+    stat = _process_stat(pid)
+    return f"{pid}-{stat[1]}" if stat is not None else None
+
+
+def _shell_context_dir() -> Path:
+    return kubeconfig_dir() / SHELL_CONTEXT_DIR_NAME
+
+
+def _prune_shell_contexts(directory: Path, keep: str) -> None:
+    """Remove the pins of shells that have exited, except `keep`. Best-effort.
+
+    A pin is only ever read by its own shell's descendants, so once that shell
+    is gone the file is dead weight; clearing it here, on the next write, keeps
+    the directory to roughly the shells alive at once without a sweep.
+    """
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        match = _SHELL_CONTEXT_FILE.fullmatch(entry.name)
+        if match is None or entry.name == keep:
+            continue
+        stat = _process_stat(int(match.group(1)))
+        if stat is not None and stat[1] == match.group(2):
+            continue
+        try:
+            entry.unlink()
+        except OSError:
+            pass
 
 
 def _replace_file(path: Path, text: str) -> None:
     """Write `text` to `path` so a concurrent reader sees the old file or the new.
 
     A plain truncate-and-write leaves a window where the file is empty: a
-    kubectl reading the card pin in it falls back to the host with exit 0, and
+    kubectl reading the shell's pin in it falls back to the host with exit 0, and
     one exporting the per-target kubeconfig, or a Cluster Agent's pinned
     `--kubeconfig`/`KUBECONFIG` destination, fails as unreadable. Both are the
     failures this module exists to prevent, so the file is staged beside its
@@ -428,49 +516,53 @@ def _replace_file(path: Path, text: str) -> None:
         raise
 
 
-def record_card_context(context: str) -> bool:
-    """Make `context` the card's default for a kubectl that names no cluster.
+def record_shell_context(context: str) -> bool:
+    """Make `context` this command line's default for a kubectl naming no cluster.
 
-    What gcloud does on a workstation: the cluster you just fetched is current.
-    Scoped to one kanban card, so it never becomes the pod's default -- the
-    drift #1799 reported, which #1852 closed by pinning the broker to the host
-    cluster. Outside a card there is no pin, and a context-less kubectl reads
-    the host cluster exactly as #1852 left it.
+    What gcloud does on a workstation -- the cluster you just fetched is
+    current -- for the rest of the shell that fetched it and nothing else, so
+    it never becomes the pod's default: the drift #1799 reported, which #1852
+    closed by pinning the broker to the host cluster. The next command line, a
+    resumed card or a parallel subshell has another shell, and a context-less
+    kubectl there reads the host cluster exactly as #1852 left it.
 
     Returns whether the pin was recorded. Failing to record it costs the
     convenience, not the command, so it is reported and not raised.
     """
-    task = kanban_task()
-    if task is None:
+    keys = _shell_keys()
+    if not keys:
         return False
-    path = _card_context_path(task)
+    directory = _shell_context_dir()
+    path = directory / f"{keys[0]}{SHELL_CONTEXT_SUFFIX}"
     try:
         _replace_file(path, context)
     except OSError as exc:
-        print(f"credential proxy: could not record the card's context in {path}: {exc}", file=sys.stderr)
+        print(f"credential proxy: could not record the shell's context in {path}: {exc}", file=sys.stderr)
         return False
+    _prune_shell_contexts(directory, keep=path.name)
     return True
 
 
-def card_context() -> str | None:
-    """The context this card's last context-less get-credentials fetched.
+def shell_context() -> str | None:
+    """The context the nearest enclosing shell's context-less get-credentials fetched.
 
     The file is the agent's to write, so what it holds is caller input like any
     other: it crosses only as a name, and only a name `parse_gke_context`
     accepts. Naming a cluster is what `KUBECONFIG` already lets a caller do.
     """
-    task = kanban_task()
-    if task is None:
-        return None
-    try:
-        with _card_context_path(task).open("rb") as stream:
-            raw = stream.read(MAX_CARD_CONTEXT_BYTES + 1)
-    except OSError:
-        return None
-    if len(raw) > MAX_CARD_CONTEXT_BYTES:
-        return None
-    context = raw.decode("utf-8", errors="replace").strip()
-    return context if parse_gke_context(context) is not None else None
+    directory = _shell_context_dir()
+    own = _own_key()
+    for key in ([own] if own else []) + _shell_keys():
+        try:
+            with (directory / f"{key}{SHELL_CONTEXT_SUFFIX}").open("rb") as stream:
+                raw = stream.read(MAX_SHELL_CONTEXT_BYTES + 1)
+        except OSError:
+            continue
+        if len(raw) > MAX_SHELL_CONTEXT_BYTES:
+            return None
+        context = raw.decode("utf-8", errors="replace").strip()
+        return context if parse_gke_context(context) is not None else None
+    return None
 
 
 def implicit_kubectl_context(argv: list[str]) -> str:
@@ -487,13 +579,13 @@ def implicit_kubectl_context(argv: list[str]) -> str:
     the one the flag names. A `--context` that is not a GKE name is left to
     kubectl, as before.
 
-    Then the card's pin, when there is no `--context` at all. Empty otherwise,
+    Then the shell's pin, when there is no `--context` at all. Empty otherwise,
     which is the broker's host default.
     """
     flag = kubectl_context_flag(argv)
     if flag is not None:
         return flag if parse_gke_context(flag) is not None else ""
-    return card_context() or ""
+    return shell_context() or ""
 
 
 def land_implicit_kubeconfig(generated: str) -> None:
@@ -523,23 +615,24 @@ def land_implicit_kubeconfig(generated: str) -> None:
     except OSError as exc:
         written = False
         print(f"credential proxy: could not write {path}: {exc}", file=sys.stderr)
-    pinned = record_card_context(target.context_name)
+    pinned = record_shell_context(target.context_name)
     lines = ["credential proxy: no --kubeconfig or KUBECONFIG was given."]
     if written:
         lines.append(f"  Credentials for {target.context_name} are in {path}.")
     if pinned:
         lines.append(
-            "  In this kanban card, a kubectl that names no cluster now reads"
-            f" {target.context_name}."
+            "  For the rest of this command line, a kubectl that names no cluster"
+            f" reads {target.context_name}. Later commands read the host cluster;"
+            f" to reach {target.context_name} from them:"
         )
     else:
         lines.append(
             "  A kubectl that names no cluster still reads the host cluster."
             f" To reach {target.context_name}:"
         )
-        if written:
-            lines.append(f"    export KUBECONFIG={path}")
-        lines.append(f"    kubectl --context={target.context_name} ...")
+    if written:
+        lines.append(f"    export KUBECONFIG={path}")
+    lines.append(f"    kubectl --context={target.context_name} ...")
     print("\n".join(lines), file=sys.stderr)
 
 

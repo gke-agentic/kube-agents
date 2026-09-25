@@ -734,15 +734,22 @@ Consequences:
   (`credential_proxy_client.py`) to the context name the broker regenerates from:
   `KUBECONFIG` or `--kubeconfig` pointing at a per-target file, which keep
   precedence; a `--context` that is a GKE context name, forwarded as that name;
-  or, inside a kanban card only, nothing at all — a context-less `kubectl` there
-  follows the cluster of the card's own last `get-credentials` that was given no
-  `KUBECONFIG` destination, as `gcloud` would on a workstation, and the pin is
-  keyed by the card's task id so it never becomes another card's or the pod's
-  default. A `get-credentials` given no `KUBECONFIG` destination also asks for
-  its file back and lands it at
-  `${HERMES_HOME:-/opt/data}/.kubeconfigs/kubeconfig_<project>_<cluster>_<location>.yaml`.
-  Outside a card it prints the `export KUBECONFIG=` and `--context` lines that
-  reach that cluster; inside one it says the card's kubectl now reads it.
+  or, later in the same command line, nothing at all — a context-less `kubectl`
+  run after a `get-credentials` that was given no `KUBECONFIG` destination, as
+  in `get-credentials seeded-a && kubectl get pods`, reaches that cluster, as
+  `gcloud` would on a workstation. The pin is keyed on the shell process that
+  ran the `get-credentials` (its pid and start time) and found by walking the
+  `kubectl`'s ancestors, so it lasts one command line and never becomes the
+  pod's default: the next command and a resumed card have a different shell
+  and read the host cluster, and a `get-credentials` inside a backgrounded
+  `( … ) &` pins that subshell alone, so parallel fetches do not race. The walk
+  crosses shells only, so a `get-credentials` whose parent is not a shell
+  (`timeout 60 gcloud …`) pins nothing and a later `kubectl` reads the host. A
+  `get-credentials` given no `KUBECONFIG` destination also asks for its file
+  back and lands it at
+  `${HERMES_HOME:-/opt/data}/.kubeconfigs/kubeconfig_<project>_<cluster>_<location>.yaml`,
+  and prints the `export KUBECONFIG=` and `--context` lines that reach that
+  cluster from later commands.
 - Proxied `kubectl` reads get `--request-timeout=30s` and a 60-second deadline,
   so an unreachable control plane fails in seconds rather than holding a broker
   worker for `kubectl`'s 300-second client default. Commands that are meant to
