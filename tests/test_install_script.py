@@ -922,14 +922,23 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
         # moves with it, for the last arm of the same resolution. The pointer
         # stays unset on purpose: with KUBE_AGENTS_INSTALL_ENV set, every shape
         # of this lookup the installer has ever had returned early.
+        #
+        # The read this PR removed was `${_state_repo_dir}/k8s-operator/scripts/
+        # vars.sh`. The copy has no scripts/installer/installer_common.sh beside
+        # it, so _resolve_repo_dir_for_state falls through to $HOME/kube-agents;
+        # the retired file is staged there as well, and the run asserts that is
+        # where the resolver points (_state_repo_dir itself is unset once the
+        # source-time bootstrap is done), so the historical shape is exercised
+        # rather than only reads relative to the script or the working directory.
         with tempfile.TemporaryDirectory() as tmpdir:
             checkout = pathlib.Path(tmpdir) / "checkout"
             home = pathlib.Path(tmpdir) / "home"
             checkout.mkdir()
             home.mkdir()
-            retired = checkout / "k8s-operator" / "scripts" / "vars.sh"
-            retired.parent.mkdir(parents=True)
-            retired.write_text('export CLUSTER_NAME="from-retired-vars"\n')
+            for root in (checkout, home / "kube-agents"):
+                retired = root / "k8s-operator" / "scripts" / "vars.sh"
+                retired.parent.mkdir(parents=True)
+                retired.write_text('export CLUSTER_NAME="from-retired-vars"\n')
             script_copy = checkout / "install.sh"
             shutil.copy(_INSTALL_SH, script_copy)
             missing_env = checkout / "install.env"
@@ -939,11 +948,13 @@ out_dir=""; acquire_source_repo out_dir "{requested_ref}"; echo "RESOLVED=$out_d
             proc = _run_installer_bash(
                 f'KUBE_AGENTS_SOURCE_ONLY=true source "{script_copy}"\n'
                 f'INSTALL_ENV_EXPLICIT="false"; bootstrap_install_env "{missing_env}"\n'
+                'echo "STATE_REPO_DIR=$(_resolve_repo_dir_for_state)"\n'
                 'echo "CLUSTER=${CLUSTER_NAME:-<unset>}"\n',
                 env,
                 cwd=checkout,
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn(f"STATE_REPO_DIR={home / 'kube-agents'}\n", proc.stdout)
             self.assertIn("CLUSTER=<unset>", proc.stdout)
             # The isolation itself, not just its consequence: the bootstrap
             # announces every file it reads, and this run has none to read.
@@ -2307,6 +2318,53 @@ class NonInteractiveRerunInheritanceTest(unittest.TestCase):
         # And the answer the generator reaches is read back, so the summary and
         # the recorded install.env agree with the tfvars.
         self.assertIn('    memory_provider="${MEMORY_PROVIDER:-$DEFAULT_MEMORY_PROVIDER}"', source)
+
+    def test_the_generators_hindsight_answer_is_what_install_env_records(self):
+        """The read-back after write_tfvars_from_state, run rather than pinned.
+
+        bootstrap_install_env_file records MEMORY from PARAM_MEMORY, which until
+        this block still holds DEFAULT_MEMORY (`file`). If the generator's probe
+        found Hindsight and generated kube_agents_memory, but PARAM_MEMORY kept
+        `file`, the next run would read MEMORY=file as an explicit choice, skip
+        the probe, and plan hindsight-postgresql away — the loss the guard
+        exists to prevent, one run later. So the block is lifted out of main()
+        and executed: an unstated mode that the generator resolved to Hindsight
+        is recorded as `hindsight`; any other answer, or a stated mode, leaves
+        PARAM_MEMORY alone.
+        """
+        source = _INSTALL_SH.read_text()
+        opening = (
+            '  if [ "$PARAM_MEMORY_EXPLICIT" != "true" ]; then\n'
+            '    memory_provider="${MEMORY_PROVIDER:-$DEFAULT_MEMORY_PROVIDER}"\n'
+        )
+        self.assertEqual(source.count(opening), 1, "the read-back block moved or was duplicated")
+        start = source.index(opening)
+        block = source[start : source.index("\n  fi\n", start) + len("\n  fi\n")]
+        cases = (
+            # (PARAM_MEMORY_EXPLICIT, MEMORY_PROVIDER from the generator, expected PARAM_MEMORY)
+            ("false", "kube_agents_memory", "hindsight"),
+            ("false", "", "file"),
+            ("true", "kube_agents_memory", "file"),
+        )
+        for explicit, generated, expected in cases:
+            with self.subTest(explicit=explicit, generated=generated):
+                proc = subprocess.run(
+                    [
+                        "bash",
+                        "-c",
+                        "set -u\n"
+                        f'PARAM_MEMORY_EXPLICIT="{explicit}"; PARAM_MEMORY="file"; memory_mode="file"\n'
+                        'DEFAULT_MEMORY_PROVIDER="multiuser_memory"\n'
+                        + (f'MEMORY_PROVIDER="{generated}"\n' if generated else "unset MEMORY_PROVIDER\n")
+                        + block
+                        + 'echo "PARAM_MEMORY=${PARAM_MEMORY} MODE=${memory_mode}"\n',
+                    ],
+                    capture_output=True,
+                    text=True,
+                    env=get_isolated_test_env(),
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn(f"PARAM_MEMORY={expected} MODE={expected}\n", proc.stdout)
 
     def test_every_generator_call_that_is_followed_by_an_apply_asks_for_an_answer(self):
         """One call site carrying the opt-in is not the property that matters.
