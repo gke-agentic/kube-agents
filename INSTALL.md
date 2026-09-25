@@ -207,7 +207,13 @@ An agent given that prompt, or reading this file on its own, follows these steps
    elsewhere, it clones to, or reuses, `$HOME/kube-agents` (see Install Sources under
    [Method 0](#method-0-zero-friction-one-liner-installation-fastest)), and a real run refuses a
    clone there with uncommitted changes. A dry run regenerates `terraform.tfvars` in that clone, so
-   back it up first if it belongs to a live deployment. For `gemini`, `openai` or `anthropic`, have
+   back it up first if it belongs to a live deployment. If `$HOME/kube-agents/install.env` exists,
+   it records an earlier install, and the installer loads it before any flag: its chat, Slack,
+   GitOps, memory and key settings carry into this one, and the pre-flight summary does not show
+   all of them. Ask the operator whether this install is that same deployment. If it is not, have
+   them move the file aside (for example to `install.env.<old-cluster>`) before the dry run, so the
+   new install records its own; the moved file still serves the old deployment through
+   `KUBE_AGENTS_INSTALL_ENV`. For `gemini`, `openai` or `anthropic`, have
    the operator export `GEMINI_API_KEY`, `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` in the shell before
    starting, so the key stays out of the command line and the agent's transcript; `vertex_ai` needs
    no key, and `gemini` can instead read one from the Secret Manager secret
