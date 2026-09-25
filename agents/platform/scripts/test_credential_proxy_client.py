@@ -566,29 +566,32 @@ class TestShellAncestry(unittest.TestCase):
         self.process(300, 1, 44, comm="odd) (name x")
         self.assertEqual((1, "44", "odd) (name x"), credential_proxy_client._process_stat(300))
 
-    def test_the_walk_stops_at_the_first_process_that_is_not_a_shell(self):
-        # Nothing above the command line may key a pin: a shell that launched
-        # the Hermes process would otherwise pin every later command.
-        self.process(300, 200, 33)
-        self.process(200, 100, 22, comm="python3")
-        self.process(100, 1, 11)
-        with patch.object(credential_proxy_client.os, "getppid", return_value=300):
-            self.assertEqual(["300-33"], credential_proxy_client._shell_keys())
-        with patch.object(credential_proxy_client.os, "getppid", return_value=200):
-            self.assertEqual([], credential_proxy_client._shell_keys())
-
-    def test_reading_walks_through_processes_that_are_not_shells(self):
+    def test_the_walk_keys_shells_and_steps_over_everything_else(self):
         # `get-credentials x && timeout 30 kubectl ...`: kubectl's parent is
-        # timeout, and the line's shell is above it.
+        # timeout, and the line's shell is above it; sshd is never a key.
         self.process(300, 200, 33, comm="timeout")
         self.process(200, 100, 22)
         self.process(100, 1, 11, comm="sshd")
         with patch.object(credential_proxy_client.os, "getppid", return_value=300):
+            self.assertEqual(["200-22"], credential_proxy_client._shell_keys())
+        with patch.object(credential_proxy_client.os, "getppid", return_value=100):
             self.assertEqual([], credential_proxy_client._shell_keys())
-            self.assertEqual(
-                ["300-33", "200-22", "100-11"],
-                credential_proxy_client._shell_keys(through_other_processes=True),
-            )
+
+    def test_a_pin_named_for_a_process_that_is_not_a_shell_is_not_read(self):
+        # sshd outlives every command line on a ControlMaster connection; a
+        # file keyed on it must not become every later command's default.
+        home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        shells = home / ".kubeconfigs" / "shells"
+        shells.mkdir(parents=True)
+        (shells / "100-11.context").write_text(SEEDED_CONTEXT)
+        self.process(300, 200, 33, comm="kubectl")
+        self.process(200, 100, 22)
+        self.process(100, 1, 11, comm="sshd")
+        with patch.dict("os.environ", {"HERMES_HOME": str(home)}, clear=False), \
+             patch.object(credential_proxy_client.os, "getpid", return_value=300), \
+             patch.object(credential_proxy_client.os, "getppid", return_value=200):
+            self.assertIsNone(credential_proxy_client.shell_context())
 
     def test_an_execd_kubectl_reads_its_own_key_first(self):
         # `get-credentials x ; kubectl` -- bash execs the last command, so the
@@ -1443,17 +1446,37 @@ class TestRealShellCommandLines(unittest.TestCase):
         self.assertEqual([f"m -> {self.A}"], self.line("(FETCH seeded-a) & wait; kubectl get pods m"))
 
     def test_a_kubectl_under_a_process_that_is_not_a_shell(self):
+        helper = "python3 -c 'import subprocess; subprocess.run([\"kubectl\", \"get\", \"pods\", \"p\"])'"
         out = self.line(
             "FETCH seeded-a && timeout 30 kubectl get pods t"
-            " && echo x | xargs kubectl get pods"
-            " && python3 -c 'import subprocess; subprocess.run([\"kubectl\", \"get\", \"pods\", \"p\"])'"
+            f" && echo x | xargs kubectl get pods && {helper}; true"
         )
         self.assertEqual([f"t -> {self.A}", f"x -> {self.A}", f"p -> {self.A}"], out)
 
-    def test_a_fetch_under_a_process_that_is_not_a_shell_pins_nothing(self):
+    def test_a_helper_bash_execs_last_reads_the_host(self):
+        # The one shape the shell-only keys give up: bash execs a bare -c
+        # string's last command, so the helper holds the shell's pid under
+        # another name. Hermes' wrapper runs the command inside a non-final
+        # eval, where bash does not exec it.
+        helper = self.root / "helper.py"
+        helper.write_text('import subprocess\nsubprocess.run(["kubectl", "get", "pods", "p"])\n')
+        self.assertEqual(["p -> HOST"], self.line(f"FETCH seeded-a && python3 {helper}"))
         self.assertEqual(
-            ["m -> HOST"], self.line("timeout 60 FETCH seeded-a && kubectl get pods m")
+            [f"p -> {self.A}"],
+            self.line(f"eval 'FETCH seeded-a && python3 {helper}'\n__ec=$?"),
         )
+
+    def test_a_fetch_under_a_process_that_is_not_a_shell_pins_the_line(self):
+        self.assertEqual(
+            [f"m -> {self.A}"], self.line("timeout 60 FETCH seeded-a && kubectl get pods m")
+        )
+
+    def test_a_wrapped_fetch_replaces_the_lines_earlier_pin(self):
+        out = self.line(
+            "FETCH seeded-a && kubectl get pods x"
+            " && timeout 60 FETCH seeded-b && kubectl get pods y"
+        )
+        self.assertEqual([f"x -> {self.A}", f"y -> {self.B}"], out)
 
     def test_a_subshell_inherits_its_parents_pin(self):
         self.assertEqual([f"m -> {self.A}"], self.line("FETCH seeded-a && (kubectl get pods m)"))
