@@ -113,8 +113,9 @@ SOURCES_ADOPTED_CHECKOUT="false"
 # whichever revision the first had it on at the time.
 #
 # Same lock file as install.sh: both front doors adopt and move the one
-# checkout in $HOME/kube-agents (refresh_existing_clone detaches its HEAD, and
-# restore_moved_checkout returns it on a pre-apply refusal), and both write
+# checkout in $HOME/kube-agents (each detaches its HEAD with its own
+# refresh_existing_clone; this script also returns it with
+# restore_moved_checkout on a pre-apply refusal), and both write
 # gitignored terraform.tfvars under its composition directory. An install and an
 # upgrade running at once would take turns moving that one directory while both
 # read terraform and charts out of it.

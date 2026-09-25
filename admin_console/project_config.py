@@ -167,7 +167,8 @@ def load_provisioned_target(install_env_path: Path) -> DeploymentTarget | None:
     install.env is the single source of provisioned state: it is the input the
     installers read, so it is what the portal must agree with. The generated
     `k8s-operator/scripts/vars.sh` that preceded it is deliberately not
-    consulted -- nothing has written it since the installers switched over, so
+    consulted -- no release since 0.4.0 has created one (upgrade.sh 0.4.0-0.6.0
+    only kept an existing one's coordinates current, and nothing does now), so
     a copy found today is stale state that would offer a cluster the installers
     are no longer pointed at.
 

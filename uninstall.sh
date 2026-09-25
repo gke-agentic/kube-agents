@@ -550,7 +550,7 @@ main() {
         if [ -n "$wrapper_checkout" ] && [ "$wrapper_checkout" != "${PWD}" ]; then
           handoff_searched="${wrapper_checkout} or ${handoff_searched}"
         fi
-        if [ -n "$handoff_install_checkout" ]; then
+        if [ -n "$handoff_install_checkout" ] && [ "$handoff_install_checkout" != "${PWD}" ]; then
           handoff_searched="${handoff_searched} or ${handoff_install_checkout}"
         fi
         print_warning "No install configuration (install.env) was found in ${handoff_searched}."

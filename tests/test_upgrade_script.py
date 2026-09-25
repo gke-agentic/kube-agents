@@ -9,6 +9,7 @@ import pathlib
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -1985,9 +1986,10 @@ exit {exit_code}
 
         A preview builds its own sources, so repo_dir is a temporary clone with
         no install.env in it — which is exactly the shape that used to make the
-        upgrade one-liner refuse. The install checkout is the second place the
-        resolution looks, and the project below is proof the file was not merely
-        found but read.
+        upgrade one-liner refuse. The install checkout is the last place the
+        resolution looks, after KUBE_AGENTS_INSTALL_ENV, repo_dir and the working
+        directory, and the project below is proof the file was not merely found
+        but read.
         """
         home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture(
             "0.2.0", real_installer_common=True
@@ -2457,7 +2459,11 @@ class UpgradeRunsAreSerialisedTest(unittest.TestCase):
 
     def test_the_lock_is_not_taken_when_the_script_is_only_sourced(self):
         """The suite sources upgrade.sh; a lock at source time would serialise it
-        against itself, and against any upgrade running on the same machine."""
+        against itself, and against any upgrade running on the same machine.
+
+        This pins the guard's placement; the behaviour itself (a source-only
+        load with the lock held still succeeds) is asserted in
+        test_a_second_run_stops_while_the_first_holds_the_lock."""
         text = _UPGRADE_SH.read_text()
         guard = text.index('if [ "${KUBE_AGENTS_SOURCE_ONLY:-false}" != "true" ] && command -v flock')
         self.assertLess(guard, text.index("flock -n 200"))
@@ -2469,10 +2475,14 @@ class UpgradeRunsAreSerialisedTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="upgrade-lock-") as tmp:
             lock_file = pathlib.Path(tmp) / "upgrade.lock"
             lock_file.touch()
+            # Its own session, so the whole group can be killed: flock(1) runs
+            # `sleep` as a child that inherits the locked descriptor, and
+            # killing flock alone would leave that child holding the lock.
             holder = subprocess.Popen(
                 ["flock", str(lock_file), "-c", "sleep 30"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                start_new_session=True,
             )
             try:
                 # Given a moment to take it: flock(1) opens the file and blocks
@@ -2498,11 +2508,25 @@ class UpgradeRunsAreSerialisedTest(unittest.TestCase):
                     ),
                     cwd=tmp,
                 )
+                # And the source-only load the suite relies on is not stopped by
+                # the same held lock.
+                sourced = subprocess.run(
+                    ["bash", "-c", f'KUBE_AGENTS_SOURCE_ONLY=true source "{_UPGRADE_SH}"; echo SOURCED'],
+                    capture_output=True,
+                    text=True,
+                    env=get_isolated_test_env(
+                        overrides={"KUBE_AGENTS_LOCK_FILE": str(lock_file), "HOME": tmp}
+                    ),
+                    cwd=tmp,
+                )
             finally:
-                holder.kill()
+                os.killpg(holder.pid, signal.SIGKILL)
                 holder.wait()
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         self.assertIn("Another instance of the kube-agents installer or upgrade", proc.stdout + proc.stderr)
+        self.assertEqual(sourced.returncode, 0, sourced.stdout + sourced.stderr)
+        self.assertIn("SOURCED\n", sourced.stdout)
+        self.assertNotIn("Another instance", sourced.stdout + sourced.stderr)
 
     def test_a_free_lock_lets_the_run_through(self):
         """The control: the same run with nothing holding the lock answers normally."""
