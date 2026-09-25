@@ -9,6 +9,7 @@ import http.client
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 import urllib.error
@@ -565,15 +566,26 @@ def shell_context() -> str | None:
     The file is the agent's to write, so what it holds is caller input like any
     other: it crosses only as a name, and only a name `parse_gke_context`
     accepts. Naming a cluster is what `KUBECONFIG` already lets a caller do.
+
+    Only a pin this uid wrote counts. The hermes principal runs with
+    HERMES_HOME=/opt/data, a directory the sandboxed agent owns; a pin the
+    agent planted there under a hermes shell's key would otherwise steer a
+    trusted kubectl. The open refuses a symlink and the file must be a regular
+    file with one link, owned by this uid, which a file the agent made is not.
     """
     directory = _shell_context_dir()
     own = _own_key()
+    uid = os.geteuid()
     for key in ([own] if own else []) + _shell_keys():
         try:
-            with (directory / f"{key}{SHELL_CONTEXT_SUFFIX}").open("rb") as stream:
-                raw = stream.read(MAX_SHELL_CONTEXT_BYTES + 1)
+            fd = os.open(directory / f"{key}{SHELL_CONTEXT_SUFFIX}", os.O_RDONLY | os.O_NOFOLLOW)
         except OSError:
             continue
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != uid or info.st_nlink != 1:
+                return None
+            raw = stream.read(MAX_SHELL_CONTEXT_BYTES + 1)
         if len(raw) > MAX_SHELL_CONTEXT_BYTES:
             return None
         context = raw.decode("utf-8", errors="replace").strip()

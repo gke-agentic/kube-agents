@@ -593,6 +593,42 @@ class TestShellAncestry(unittest.TestCase):
              patch.object(credential_proxy_client.os, "getppid", return_value=200):
             self.assertIsNone(credential_proxy_client.shell_context())
 
+    def _pinned_shell(self):
+        home = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, home, ignore_errors=True)
+        shells = home / ".kubeconfigs" / "shells"
+        shells.mkdir(parents=True)
+        self.process(300, 200, 33, comm="kubectl")
+        self.process(200, 1, 22)
+        env = patch.dict("os.environ", {"HERMES_HOME": str(home)}, clear=False)
+        pid = patch.object(credential_proxy_client.os, "getpid", return_value=300)
+        ppid = patch.object(credential_proxy_client.os, "getppid", return_value=200)
+        return shells / "200-22.context", env, pid, ppid
+
+    def test_a_pin_another_uid_owns_is_not_read(self):
+        # hermes runs with HERMES_HOME=/opt/data, which the agent owns: a pin
+        # the agent planted under a hermes shell's key must not steer it.
+        path, env, pid, ppid = self._pinned_shell()
+        path.write_text(SEEDED_CONTEXT)
+        with env, pid, ppid:
+            self.assertEqual(SEEDED_CONTEXT, credential_proxy_client.shell_context())
+            with patch.object(credential_proxy_client.os, "geteuid", return_value=os.geteuid() + 1):
+                self.assertIsNone(credential_proxy_client.shell_context())
+
+    def test_a_symlinked_or_hard_linked_pin_is_not_read(self):
+        path, env, pid, ppid = self._pinned_shell()
+        target = path.parent / "elsewhere"
+        target.write_text(SEEDED_CONTEXT)
+        path.symlink_to(target)
+        with env, pid, ppid:
+            self.assertIsNone(credential_proxy_client.shell_context())
+            path.unlink()
+            os.link(target, path)
+            self.assertIsNone(credential_proxy_client.shell_context())
+            path.unlink()
+            path.write_text(SEEDED_CONTEXT)
+            self.assertEqual(SEEDED_CONTEXT, credential_proxy_client.shell_context())
+
     def test_an_execd_kubectl_reads_its_own_key_first(self):
         # `get-credentials x ; kubectl` -- bash execs the last command, so the
         # kubectl is the process the pin was recorded under.

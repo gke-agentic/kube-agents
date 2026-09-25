@@ -725,7 +725,7 @@ Consequences:
   denial-of-service boundary rather than a performance choice.
 - `gcloud container clusters get-credentials` runs against an isolated scratch
   kubeconfig, and the result is filed under the context it names. It never writes
-  the broker's own base kubeconfig. That base file is where a `kubectl` naming no
+  the broker's own base kubeconfig. That base file is where a request naming no
   cluster resolves, and `bootstrap` sets its `current-context` — and its
   default namespace — to the host cluster once at startup. Leaving it alone is
   what keeps a context-less `kubectl` on the host cluster instead of following
@@ -739,13 +739,19 @@ Consequences:
   in `get-credentials seeded-a && kubectl get pods`, reaches that cluster, as
   `gcloud` would on a workstation. The pin is keyed on the nearest shell
   process above the `get-credentials` (its pid and start time), and a `kubectl`
-  finds it by the same walk: both step over `timeout`, `xargs` or a helper
-  script and key only processes named as shells. So a `timeout 60 gcloud …`
+  finds it by the same walk, after first checking its own pid for the case
+  where bash exec'd it in the shell's place: both step over `timeout`, `xargs`
+  or a helper script and key only processes whose `/proc` command name is a
+  shell. So a `timeout 60 gcloud …`
   fetch pins the line and replaces an earlier fetch's pin in it, and a pin
   file named for sshd, which outlives every command line on the Hermes
-  connection, is never read. The pin lasts one command line and never becomes
-  the pod's default: the next command and a resumed card have a different
-  shell and read the host cluster. A backgrounded subshell of two or more
+  connection, is never read. sshd is pid 1 in the sandbox and the walk stops
+  there, so no shell above it can be keyed. A pin counts only when it is a
+  regular file, not a link, owned by the uid reading it, so the hermes
+  principal, whose `HERMES_HOME` is the agent-owned `/opt/data`, is not steered
+  by a pin the agent planted. The pin lasts one command line and
+  never becomes the pod's default: the next command and a resumed card have a
+  different shell and read the host cluster. A backgrounded subshell of two or more
   commands, `( get-credentials a && … ) &`, pins that subshell alone, so
   parallel fetches written that way do not race; bash execs a one-command
   `( get-credentials a ) &`, so that fetch pins the line's own shell, as it
