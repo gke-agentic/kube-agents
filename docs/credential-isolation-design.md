@@ -758,8 +758,9 @@ Consequences:
   parallel fetches written that way do not race; bash execs a one-command
   `( get-credentials a ) &`, so that fetch pins the line's own shell, as it
   would without the parentheses. Other parallel fetches in one line also share
-  the line's pin, last writer wins: bare `get-credentials a & get-credentials
-  b &`, `xargs -P`, and `#!/bin/bash` helper scripts run by path, whose command
+  the line's pin, last writer wins: bare
+  `get-credentials a & get-credentials b &`, `xargs -P`, and `#!/bin/bash`
+  helper scripts run by path, whose command
   name is the script's rather than a shell's. Parallel work that needs
   different clusters exports `KUBECONFIG` per target. A fetch inside a forked
   stage of several commands, `{ get-credentials a; … } | tee log` or `$( … )`,
