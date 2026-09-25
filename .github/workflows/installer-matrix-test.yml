@@ -162,8 +162,10 @@ jobs:
             ./upgrade.sh --dry-run -y --upgrade-mode=full --gcp-project-id="ci-test-project" --image-tag="$GITHUB_SHA"
 
           # Negative control: the same preview with nothing to read must refuse
-          # rather than report. HOME is moved as well, because an install
-          # checkout in $HOME/kube-agents is one of the places the run looks.
+          # rather than report. This run is from a checkout, which looks only at
+          # KUBE_AGENTS_INSTALL_ENV, the checkout and the working directory --
+          # $HOME/kube-agents is consulted only by a run from outside one. HOME
+          # is moved anyway so the control does not rest on that.
           refusal_log="$RUNNER_TEMP/upgrade-refusal.log"
           set +e
           env HOME="$RUNNER_TEMP/empty-home" PATH="$RUNNER_TEMP/kube-agents-test-bin:$PATH" \

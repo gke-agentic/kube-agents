@@ -2026,8 +2026,14 @@ exit {exit_code}
             ("terraform", 0),
             ("jq", 0),
         ):
+            # Each call is recorded, so a run stopped by a failing stub can be
+            # pinned to the call that stopped it.
             stub = stub_bin / tool
-            stub.write_text(f"#!/usr/bin/env bash\nexit {exit_code}\n")
+            stub.write_text(
+                "#!/usr/bin/env bash\n"
+                f'printf "%s\\n" "$*" >> "{base / (tool + ".calls")}"\n'
+                f"exit {exit_code}\n"
+            )
             stub.chmod(0o755)
         neutral = base / "neutral"
         neutral.mkdir(exist_ok=True)
@@ -2146,6 +2152,17 @@ exit {exit_code}
         self.assertIn(f"Loaded install configuration from: {clone_dir}/install.env", combined)
         self.assertNotIn("Refusing to upgrade without", combined)
         self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
+        # Stopped where the docstring says: the credentials fetch is the last
+        # thing the run asked gcloud for, and no cluster tool was reached. A
+        # refusal earlier in main() would also exit non-zero and restore the
+        # checkout, so without this the assertions above could not tell.
+        base = home_dir.parent
+        gcloud_log = base / "gcloud.calls"
+        self.assertTrue(gcloud_log.exists(), "the run stopped before it called gcloud at all")
+        gcloud_calls = gcloud_log.read_text().splitlines()
+        self.assertTrue(gcloud_calls[-1].startswith("container clusters get-credentials"), gcloud_calls)
+        for tool in ("kubectl", "helm", "terraform"):
+            self.assertFalse((base / f"{tool}.calls").exists(), f"{tool} ran before the credentials fetch")
 
     def _fixture_configured_for(self, cluster):
         """A clone whose install.env belongs to a named install."""
