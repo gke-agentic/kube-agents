@@ -61,12 +61,12 @@ Or give this prompt to an AI coding assistant. It needs no checkout of this repo
 ```text
 Install the latest official release of kube-agents (github.com/gke-labs/kube-agents) into my GCP project.
 Follow INSTALL.md from that release tag — do not invent installer URLs, namespaces, or model names.
-First inspect my gcloud project and existing GKE clusters and confirm the target, cluster, and model
-provider with me. Run install.sh with --dry-run and show me its printed summary before you change anything.
+First inspect my gcloud project and existing GKE clusters and confirm the target, cluster, model provider,
+and credential with me. Run install.sh with --dry-run and show me its printed summary before you change anything.
 Only run the real install after I say yes.
 ```
 
-[INSTALL.md](INSTALL.md#ai-assisted-installation) lists the steps the prompt maps to.
+The full procedure behind the prompt, including the credential and consent-flag checks, is in [INSTALL.md](INSTALL.md#ai-assisted-installation).
 
 Prefer to drive the engine by hand? Unpack `kube-agents-<RELEASE_VERSION>.tar.gz` from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases) (recommended), or clone the repository at an official release tag if a Git checkout is needed:
 

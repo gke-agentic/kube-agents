@@ -181,8 +181,8 @@ repository:
 ```text
 Install the latest official release of kube-agents (github.com/gke-labs/kube-agents) into my GCP project.
 Follow INSTALL.md from that release tag — do not invent installer URLs, namespaces, or model names.
-First inspect my gcloud project and existing GKE clusters and confirm the target, cluster, and model
-provider with me. Run install.sh with --dry-run and show me its printed summary before you change anything.
+First inspect my gcloud project and existing GKE clusters and confirm the target, cluster, model provider,
+and credential with me. Run install.sh with --dry-run and show me its printed summary before you change anything.
 Only run the real install after I say yes.
 ```
 
