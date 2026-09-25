@@ -488,11 +488,6 @@ main() {
       { [ -z "$PARAM_PROJECT_ID" ] || [ -z "$PARAM_CLUSTER_NAME" ] || [ -z "$PARAM_REGION" ]; } &&
       [ -f "$handoff_env_file" ]; then
       print_warning "Not reading ${handoff_env_file}: --source-ref is for tearing down an older release, this file was found only by searching \$HOME, and not all three of --gcp-project-id, --gke-cluster-name and --gcp-region were given to confirm it belongs to the install being torn down."
-      if [ -z "$PARAM_PROJECT_ID" ] && [ -z "$PARAM_CLUSTER_NAME" ] && [ -z "$PARAM_REGION" ]; then
-        print_warning "No coordinates are being forwarded either, so the '${PARAM_SOURCE_REF}' release will aim at its own defaults and gcloud's active project."
-      else
-        print_info "Forwarding only the command-line coordinates given to the '${PARAM_SOURCE_REF}' release; unnamed coordinates will use that release's defaults."
-      fi
       print_info "Pass all three of --gcp-project-id, --gke-cluster-name and --gcp-region to name the install to tear down, or point KUBE_AGENTS_INSTALL_ENV at ${handoff_env_file} (or run from ${HOME}/kube-agents) if that file is the one you mean."
       handoff_env_file=""
       handoff_env_was_dropped="true"
@@ -540,11 +535,37 @@ main() {
           handoff_searched="${handoff_searched} or ${handoff_install_checkout}"
         fi
         print_warning "No install configuration (install.env) was found in ${handoff_searched}."
-        if [ -z "$PARAM_PROJECT_ID" ] && [ -z "$PARAM_CLUSTER_NAME" ] && [ -z "$PARAM_REGION" ]; then
-          print_warning "No coordinates are being forwarded either, so the '${PARAM_SOURCE_REF}' release will aim at its own defaults and gcloud's active project."
-          print_info "Pass --gcp-project-id/--gke-cluster-name/--gcp-region, or point KUBE_AGENTS_INSTALL_ENV at the install's install.env, to name the install you mean."
-        fi
       fi
+    fi
+
+    # What the child will actually be told, flag-or-file per coordinate. Computed
+    # here rather than next to dispatch_args below so that the report after it
+    # comes before the clone, alongside the warnings above it.
+    local eff_project_id="${PARAM_PROJECT_ID:-${PROJECT_ID:-}}"
+    local eff_cluster_name="${PARAM_CLUSTER_NAME:-${CLUSTER_NAME:-}}"
+    local eff_region="${PARAM_REGION:-${REGION:-}}"
+    local eff_agent_namespace="${PARAM_AGENT_NAMESPACE:-${NAMESPACE:-}}"
+
+    # Every coordinate the child will NOT be told, named once and from the values
+    # above rather than per arm. Per-arm warnings covered "no file" and "a $HOME
+    # guess not read", but not a loaded install.env that lacks one of the three
+    # keys: that coordinate was silently not forwarded and the pinned release
+    # fell back to its own default. Asking what is about to be forwarded covers
+    # every arm that exists now and any added later. A warning, not a refusal:
+    # a teardown on partial configuration is supported (I4).
+    local unforwarded=""
+    [ -n "$eff_project_id" ] || unforwarded="${unforwarded:+${unforwarded}, }--gcp-project-id"
+    [ -n "$eff_cluster_name" ] || unforwarded="${unforwarded:+${unforwarded}, }--gke-cluster-name"
+    [ -n "$eff_region" ] || unforwarded="${unforwarded:+${unforwarded}, }--gcp-region"
+    if [ -z "$eff_project_id" ] && [ -z "$eff_cluster_name" ] && [ -z "$eff_region" ]; then
+      print_warning "No coordinates are being forwarded either, so the '${PARAM_SOURCE_REF}' release will aim at its own defaults and gcloud's active project."
+    elif [ -n "$unforwarded" ]; then
+      print_warning "Not forwarding ${unforwarded} to the '${PARAM_SOURCE_REF}' release: neither the command line nor a loaded install.env gives a value, so that release will fall back to its own default (gcloud's active project, for the project)."
+    fi
+    # The dropped-guess arm above already named its own remedy, pointing at the
+    # file it did not read.
+    if [ -n "$unforwarded" ] && [ "$handoff_env_was_dropped" != "true" ]; then
+      print_info "Pass --gcp-project-id/--gke-cluster-name/--gcp-region, or point KUBE_AGENTS_INSTALL_ENV at the install's install.env, to name the install you mean."
     fi
 
     TEMP_REPO_DIR="$(mktemp -d)"
@@ -575,10 +596,6 @@ main() {
       flag_cluster_name="--gke-cluster-name"
       flag_region="--gcp-region"
     fi
-    local eff_project_id="${PARAM_PROJECT_ID:-${PROJECT_ID:-}}"
-    local eff_cluster_name="${PARAM_CLUSTER_NAME:-${CLUSTER_NAME:-}}"
-    local eff_region="${PARAM_REGION:-${REGION:-}}"
-    local eff_agent_namespace="${PARAM_AGENT_NAMESPACE:-${NAMESPACE:-}}"
     local dispatch_args=()
     if [ "$PARAM_NON_INTERACTIVE" = "true" ]; then
       dispatch_args+=(--non-interactive)

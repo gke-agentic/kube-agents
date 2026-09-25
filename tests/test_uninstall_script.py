@@ -586,6 +586,47 @@ class SourceRefDispatchTest(unittest.TestCase):
             and tokens[-1].startswith("ENV_FILE="),
             f"expected exported KUBE_AGENTS_INSTALL_ENV in child environment, got {tokens[-1]}",
         )
+        combined = proc.stdout + proc.stderr
+        self.assertNotIn("Not forwarding", combined)
+        self.assertNotIn("No coordinates are being forwarded", combined)
+
+    def test_source_ref_names_a_coordinate_the_loaded_install_env_does_not_record(self):
+        """A loaded install.env that lacks one of the three keys used to drop
+        that coordinate in silence: only the no-file and dropped-guess arms
+        warned, and the main arm's guessed-coordinate report is never reached
+        because this arm execs first. The pinned release — for pre-0.4.0 refs
+        a script that reads no install.env — then aimed at its own default.
+
+        The report is now made once, from what is actually about to be
+        forwarded, so it covers this arm without a branch of its own.
+        """
+        env_text = 'PROJECT_ID="from-cwd"\nCLUSTER_NAME="install-a"\n'
+        with tempfile.TemporaryDirectory(prefix="source-ref-partial-") as explicit_dir:
+            explicit_file = pathlib.Path(explicit_dir) / "install.env"
+            explicit_file.write_text(env_text)
+            for label, kw in (
+                ("cwd", {"cwd_install_env": env_text}),
+                ("KUBE_AGENTS_INSTALL_ENV", {"install_env_var": str(explicit_file)}),
+            ):
+                with self.subTest(source=label):
+                    proc, log = self._run(
+                        ref_carries_uninstall=True,
+                        ref_speaks_domain_scoped=True,
+                        args=["--source-ref=v0.3.0", "--non-interactive"],
+                        **kw,
+                    )
+                    combined = proc.stdout + proc.stderr
+                    self.assertEqual(proc.returncode, 0, combined)
+                    self.assertIn("Loaded install configuration from:", combined)
+                    self.assertIn("Not forwarding --gcp-region to the 'v0.3.0' release", combined)
+                    self.assertNotIn("--gcp-project-id,", combined)
+                    self.assertNotIn("No coordinates are being forwarded", combined)
+                    # Still a warning, not a refusal: it hands over with what it has.
+                    self.assertIsNotNone(log, combined)
+                    self.assertEqual(
+                        log.split()[:-1],
+                        ["--non-interactive", "--gcp-project-id=from-cwd", "--gke-cluster-name=install-a"],
+                    )
 
     def test_source_ref_reads_home_install_env_when_coordinates_confirm_it(self):
         """When `--source-ref` is given coordinate flags that match
@@ -682,7 +723,8 @@ class SourceRefDispatchTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, combined)
         self.assertIn("Not reading", combined)
         self.assertIn("found only by searching $HOME", combined)
-        self.assertIn("Forwarding only the command-line coordinates given", combined)
+        self.assertIn("Not forwarding --gke-cluster-name to the 'v0.3.0' release", combined)
+        self.assertNotIn("Not forwarding --gcp-project-id", combined)
         self.assertNotIn("No install configuration (install.env) was found", combined)
         self.assertIsNotNone(log, combined)
         self.assertEqual(
@@ -823,6 +865,7 @@ class SourceRefDispatchTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, combined)
         self.assertIn("No install configuration (install.env) was found", combined)
         self.assertNotIn("No coordinates are being forwarded either", combined)
+        self.assertNotIn("Not forwarding", combined)
         self.assertIsNotNone(log, combined)
 
     def test_a_pointer_at_a_missing_file_is_refused_before_anything_is_cloned(self):
