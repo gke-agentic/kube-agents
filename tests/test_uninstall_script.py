@@ -390,6 +390,7 @@ class SourceRefDispatchTest(unittest.TestCase):
         home_install_env=None,
         cwd_install_env=None,
         install_env_var=None,
+        script_in_checkout=False,
     ):
         """Run the real uninstall.sh with a stub git on PATH.
 
@@ -404,6 +405,11 @@ class SourceRefDispatchTest(unittest.TestCase):
 
         `install_env_var` sets KUBE_AGENTS_INSTALL_ENV, which is otherwise
         cleared so a developer's own shell cannot answer for the test.
+
+        `script_in_checkout` lays the engine marker down beside the copied
+        script (which is also the working directory), so the run is a checkout
+        run: wrapper_checkout is set, and the $HOME fallback must not be
+        consulted at all.
         """
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -452,6 +458,10 @@ class SourceRefDispatchTest(unittest.TestCase):
             # gitignored install.env from the developer's own checkout.
             script_copy = pathlib.Path(tmp) / "uninstall.sh"
             shutil.copy(_UNINSTALL_SH, script_copy)
+            if script_in_checkout:
+                engine = pathlib.Path(tmp) / "terraform" / "examples" / "full-install"
+                engine.mkdir(parents=True)
+                (engine / "lifecycle.sh").touch()
             proc = subprocess.run(
                 ["bash", str(script_copy), *args],
                 capture_output=True,
@@ -827,6 +837,50 @@ class SourceRefDispatchTest(unittest.TestCase):
                 "--gcp-project-id=project-b",
                 "--gke-cluster-name=install-b",
                 "--gcp-region=us-west1",
+            ],
+        )
+
+    def test_source_ref_from_a_checkout_without_install_env_does_not_reach_into_home(self):
+        """The --source-ref half of the checkout-run $HOME gate.
+
+        The main arm's half is pinned in TeardownKnowsWhichInstallItIsAimedAtTest.
+        Here the script runs from a checkout that has no install.env, and
+        $HOME/kube-agents/install.env matches all three flags, which is exactly
+        the case the guess arm would read. A checkout run must not consult
+        $HOME at all: nothing is loaded, nothing from that file (its NAMESPACE,
+        its path) reaches the release the handover execs, and only the flags are
+        forwarded.
+        """
+        proc, log = self._run(
+            ref_carries_uninstall=True,
+            ref_speaks_domain_scoped=True,
+            script_in_checkout=True,
+            args=[
+                "--source-ref=v0.3.0",
+                "--non-interactive",
+                "--gcp-project-id=project-a",
+                "--gke-cluster-name=install-a",
+                "--gcp-region=us-east1",
+            ],
+            home_install_env=(
+                'PROJECT_ID="project-a"\n'
+                'CLUSTER_NAME="install-a"\n'
+                'REGION="us-east1"\n'
+                'NAMESPACE="home-ns"\n'
+            ),
+        )
+        combined = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 0, combined)
+        self.assertNotIn("Loaded install configuration from:", combined)
+        self.assertNotIn("/home/kube-agents/install.env", combined)
+        self.assertIsNotNone(log, combined)
+        self.assertEqual(
+            log.split(),
+            [
+                "--non-interactive",
+                "--gcp-project-id=project-a",
+                "--gke-cluster-name=install-a",
+                "--gcp-region=us-east1",
             ],
         )
 
