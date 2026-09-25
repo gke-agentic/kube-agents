@@ -577,6 +577,19 @@ class TestShellAncestry(unittest.TestCase):
         with patch.object(credential_proxy_client.os, "getppid", return_value=200):
             self.assertEqual([], credential_proxy_client._shell_keys())
 
+    def test_reading_walks_through_processes_that_are_not_shells(self):
+        # `get-credentials x && timeout 30 kubectl ...`: kubectl's parent is
+        # timeout, and the line's shell is above it.
+        self.process(300, 200, 33, comm="timeout")
+        self.process(200, 100, 22)
+        self.process(100, 1, 11, comm="sshd")
+        with patch.object(credential_proxy_client.os, "getppid", return_value=300):
+            self.assertEqual([], credential_proxy_client._shell_keys())
+            self.assertEqual(
+                ["300-33", "200-22", "100-11"],
+                credential_proxy_client._shell_keys(through_other_processes=True),
+            )
+
     def test_an_execd_kubectl_reads_its_own_key_first(self):
         # `get-credentials x ; kubectl` -- bash execs the last command, so the
         # kubectl is the process the pin was recorded under.
@@ -1426,6 +1439,21 @@ class TestRealShellCommandLines(unittest.TestCase):
         # bash execs a subshell's only command, so gcloud runs as the parent
         # shell's child: the same process tree as `FETCH seeded-a ; kubectl`.
         self.assertEqual([f"m -> {self.A}"], self.line("(FETCH seeded-a) ; kubectl get pods m"))
+        # Backgrounded too: a one-command `( ... ) &` pins the line's shell.
+        self.assertEqual([f"m -> {self.A}"], self.line("(FETCH seeded-a) & wait; kubectl get pods m"))
+
+    def test_a_kubectl_under_a_process_that_is_not_a_shell(self):
+        out = self.line(
+            "FETCH seeded-a && timeout 30 kubectl get pods t"
+            " && echo x | xargs kubectl get pods"
+            " && python3 -c 'import subprocess; subprocess.run([\"kubectl\", \"get\", \"pods\", \"p\"])'"
+        )
+        self.assertEqual([f"t -> {self.A}", f"x -> {self.A}", f"p -> {self.A}"], out)
+
+    def test_a_fetch_under_a_process_that_is_not_a_shell_pins_nothing(self):
+        self.assertEqual(
+            ["m -> HOST"], self.line("timeout 60 FETCH seeded-a && kubectl get pods m")
+        )
 
     def test_a_subshell_inherits_its_parents_pin(self):
         self.assertEqual([f"m -> {self.A}"], self.line("FETCH seeded-a && (kubectl get pods m)"))

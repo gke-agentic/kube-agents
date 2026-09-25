@@ -67,9 +67,11 @@ PER_TARGET_KUBECONFIG_NAME = "kubeconfig_{project}_{cluster}_{location}.yaml"
 # Keyed on the shell process that ran the `get-credentials`: its pid and its
 # start time from /proc, so a recycled pid is a different key. Hermes runs
 # every terminal command in a fresh `bash -c`, so the pin lasts exactly one
-# command line: the next command, a resumed card, another worker, a
-# backgrounded `( ... ) &` subshell, all have a different shell and see none
-# of it.
+# command line: the next command, a resumed card and another worker all have a
+# different shell and see none of it. A backgrounded `( ... ) &` subshell of
+# two or more commands is a shell of its own and pins alone; bash execs a
+# one-command `( get-credentials x ) &`, so that fetch pins the line's shell,
+# the same as without the parentheses.
 SHELL_CONTEXT_DIR_NAME = "shells"
 SHELL_CONTEXT_SUFFIX = ".context"
 # A GKE context name is under 200 characters; anything longer is not one.
@@ -80,12 +82,12 @@ PROC_ROOT = Path("/proc")
 # is field 4 and the start time field 22, so 1 and 19 here.
 _STAT_PPID_INDEX = 1
 _STAT_STARTTIME_INDEX = 19
-# How far up a kubectl looks for a pin. `$(kubectl ...)`, a pipeline or a
-# loop puts one or two processes between the shell and kubectl; this is a
-# bound on a walk, not a depth anything reaches.
+# How far up a kubectl looks for a pin. `$(kubectl ...)`, a pipeline, a loop
+# or `timeout`/`xargs` puts one or two processes between the shell and
+# kubectl; this is a bound on a walk, not a depth anything reaches.
 MAX_SHELL_ANCESTORS = 16
 # The process names a pin may be keyed on: the shells a command line runs in.
-# The walk up from a kubectl stops at anything else.
+# A get-credentials records a pin only when its parent is one of these.
 SHELL_COMMAND_NAMES = frozenset({"bash", "sh", "dash", "zsh", "ksh", "mksh", "ash"})
 _SHELL_CONTEXT_FILE = re.compile(r"^([0-9]+)-([0-9]+)\.context\Z")
 
@@ -430,16 +432,22 @@ def _process_stat(pid: int) -> tuple[int, str, str] | None:
         return None
 
 
-def _shell_keys() -> list[str]:
+def _shell_keys(through_other_processes: bool = False) -> list[str]:
     """`<pid>-<start time>` for the shells this process runs under, nearest first.
 
-    The walk starts at the parent and stops at the first process that is not a
-    shell, so a kubectl inside `$(...)`, a pipeline or a subshell of the line
-    that fetched still finds the line's pin, and nothing above the command
-    line -- sshd, the Hermes process, an entrypoint script that launched it --
-    is ever a key: a pin there would outlive the line, which is #1799 again.
-    A `get-credentials` records under the first key, so one whose parent is not
-    a shell (`timeout 60 gcloud ...`) records nothing.
+    The walk starts at the parent. Recording stops at the first process that
+    is not a shell, so a `get-credentials` records under its parent shell or,
+    when the parent is not a shell (`timeout 60 gcloud ...`), not at all -- and
+    nothing above the command line (sshd, the Hermes process) is ever a key: a
+    pin there would outlive the line, which is #1799 again.
+
+    Reading walks `through_other_processes` and keys every ancestor, so a
+    kubectl under `timeout`, `xargs` or a helper script in the line that
+    fetched still finds the line's pin -- including a helper that bash exec'd
+    as the line's last command, which keeps the shell's pid and start time but
+    not its name. That reaches no further than recording does: a pin exists
+    only under a key that was a shell and a get-credentials' direct parent
+    when written.
     """
     keys: list[str] = []
     pid = os.getppid()
@@ -447,7 +455,9 @@ def _shell_keys() -> list[str]:
         if pid <= 1:
             break
         stat = _process_stat(pid)
-        if stat is None or stat[2] not in SHELL_COMMAND_NAMES:
+        if stat is None:
+            break
+        if not through_other_processes and stat[2] not in SHELL_COMMAND_NAMES:
             break
         keys.append(f"{pid}-{stat[1]}")
         pid = stat[0]
@@ -523,8 +533,8 @@ def record_shell_context(context: str) -> bool:
     current -- for the rest of the shell that fetched it and nothing else, so
     it never becomes the pod's default: the drift #1799 reported, which #1852
     closed by pinning the broker to the host cluster. The next command line, a
-    resumed card or a parallel subshell has another shell, and a context-less
-    kubectl there reads the host cluster exactly as #1852 left it.
+    resumed card or a multi-command parallel subshell has another shell, and a
+    context-less kubectl there reads the host cluster exactly as #1852 left it.
 
     Returns whether the pin was recorded. Failing to record it costs the
     convenience, not the command, so it is reported and not raised.
@@ -552,7 +562,7 @@ def shell_context() -> str | None:
     """
     directory = _shell_context_dir()
     own = _own_key()
-    for key in ([own] if own else []) + _shell_keys():
+    for key in ([own] if own else []) + _shell_keys(through_other_processes=True):
         try:
             with (directory / f"{key}{SHELL_CONTEXT_SUFFIX}").open("rb") as stream:
                 raw = stream.read(MAX_SHELL_CONTEXT_BYTES + 1)

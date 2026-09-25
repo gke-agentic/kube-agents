@@ -739,12 +739,16 @@ Consequences:
   in `get-credentials seeded-a && kubectl get pods`, reaches that cluster, as
   `gcloud` would on a workstation. The pin is keyed on the shell process that
   ran the `get-credentials` (its pid and start time) and found by walking the
-  `kubectl`'s ancestors, so it lasts one command line and never becomes the
-  pod's default: the next command and a resumed card have a different shell
-  and read the host cluster, and a `get-credentials` inside a backgrounded
-  `( … ) &` pins that subshell alone, so parallel fetches do not race. The walk
-  crosses shells only, so a `get-credentials` whose parent is not a shell
-  (`timeout 60 gcloud …`) pins nothing and a later `kubectl` reads the host. A
+  `kubectl`'s ancestors, through `timeout`, `xargs` or a helper script, so it
+  lasts one command line and never becomes the pod's default: the next command
+  and a resumed card have a different shell and read the host cluster. A
+  backgrounded subshell of two or more commands, `( get-credentials a && … ) &`,
+  pins that subshell alone, so parallel fetches written that way do not race;
+  bash execs a one-command `( get-credentials a ) &`, so that fetch pins the
+  line's own shell, as it would without the parentheses. Recording keys only
+  on the fetch's parent shell, so a `get-credentials` whose parent is not a
+  shell (`timeout 60 gcloud …`) pins nothing and a later `kubectl` reads the
+  host. A
   `get-credentials` given no `KUBECONFIG` destination also asks for its file
   back and lands it at
   `${HERMES_HOME:-/opt/data}/.kubeconfigs/kubeconfig_<project>_<cluster>_<location>.yaml`,
