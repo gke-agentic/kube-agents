@@ -1029,24 +1029,26 @@ class InstallerCommonTest(unittest.TestCase):
             self._tfvars(env={"API_SERVER_KEY": "k"}),
         )
 
+    # `kubectl get … --ignore-not-found -o name` prints the object's own
+    # name when it is there and nothing at all when the API server says it
+    # is not, which is how the probe tells the two apart. Exiting 0 in
+    # silence, as this stub used to, is the *absent* answer.
+    _HINDSIGHT_KUBECTL = (
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        '  *"current-context"*) echo "gke_test-project_us-central1_test-cluster"; exit 0 ;;\n'
+        '  *"get statefulset hindsight-postgresql"*"--context gke_test-project_us-central1_test-cluster"*)\n'
+        '    echo "statefulset.apps/hindsight-postgresql"; exit 0 ;;\n'
+        "esac\n"
+        "exit 1\n"
+    )
+
     def test_memory_provider_preserves_live_hindsight_on_existing_cluster_when_unspecified(self):
         """When neither MEMORY nor MEMORY_PROVIDER is set (e.g., a non-interactive
         re-install without install.env or --memory), write_tfvars_from_state probes
         the live cluster and preserves kube_agents_memory if Hindsight is deployed,
         while still respecting an explicit MEMORY=file override."""
-        # `kubectl get … --ignore-not-found -o name` prints the object's own
-        # name when it is there and nothing at all when the API server says it
-        # is not, which is how the probe tells the two apart. Exiting 0 in
-        # silence, as this stub used to, is the *absent* answer.
-        hindsight_kubectl = (
-            "#!/usr/bin/env bash\n"
-            'case "$*" in\n'
-            '  *"current-context"*) echo "gke_test-project_us-central1_test-cluster"; exit 0 ;;\n'
-            '  *"get statefulset hindsight-postgresql"*"--context gke_test-project_us-central1_test-cluster"*)\n'
-            '    echo "statefulset.apps/hindsight-postgresql"; exit 0 ;;\n'
-            "esac\n"
-            "exit 1\n"
-        )
+        hindsight_kubectl = self._HINDSIGHT_KUBECTL
         with tempfile.TemporaryDirectory() as out_dir:
             dest = pathlib.Path(out_dir) / "terraform.tfvars"
             proc = self._run(
@@ -1067,6 +1069,35 @@ class InstallerCommonTest(unittest.TestCase):
             )
             self.assertIn("rc=0", proc_explicit.stdout, proc_explicit.stderr)
             self.assertIn('memory_provider          = "multiuser_memory"', dest.read_text())
+
+    def test_found_hindsight_is_called_preserved_only_to_a_caller_that_applies(self):
+        """The found arm is said per caller, as the could-not-ask arm is.
+
+        install.sh and upgrade.sh opt in and apply next, so "preserved … to
+        replace it" is true for them. uninstall.sh does not opt in and runs
+        lifecycle.sh destroy straight after generating, so telling it the
+        database is kept would be false; it gets the same provider with a
+        statement that holds for a teardown too.
+        """
+        for label, extra_env, expected, forbidden in (
+            ("applier", {"KUBE_AGENTS_REQUIRE_MEMORY_ANSWER": "true"}, "so it is preserved", None),
+            ("teardown", {}, "to match the live install", "preserved"),
+        ):
+            with self.subTest(caller=label), tempfile.TemporaryDirectory() as out_dir:
+                dest = pathlib.Path(out_dir) / "terraform.tfvars"
+                proc = self._run(
+                    'print_info() { echo "INFO: $*" >&2; }; '
+                    f'rc=0; write_tfvars_from_state "{dest}" || rc=$?; echo "rc=$rc"',
+                    env={"API_SERVER_KEY": "k", **extra_env},
+                    describe_stub="printf 'True\\n'; exit 0",
+                    kubectl_script=self._HINDSIGHT_KUBECTL,
+                )
+                self.assertIn("rc=0", proc.stdout, proc.stderr)
+                self.assertIn('memory_provider          = "kube_agents_memory"', dest.read_text())
+                self.assertIn("This cluster runs the Hindsight memory store", proc.stderr)
+                self.assertIn(expected, proc.stderr)
+                if forbidden:
+                    self.assertNotIn(forbidden, proc.stderr)
 
     # ── the live Hindsight probe: found / confirmed absent / could not ask ───
     #

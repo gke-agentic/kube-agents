@@ -1749,7 +1749,16 @@ write_tfvars_from_state() {
       present)
         memory_provider="kube_agents_memory"
         export MEMORY_PROVIDER="kube_agents_memory"
-        print_info "This cluster runs the Hindsight memory store and no memory mode was given, so it is preserved (memory_provider = \"kube_agents_memory\"). Record MEMORY=file or MEMORY=off in install.env (install.sh also takes --memory=file or --memory=off) to replace it."
+        # Said per caller, as the unknown arm below is and on the same signal:
+        # "preserved" and "to replace it" are true only for a caller that
+        # applies next. uninstall.sh generates through here too, immediately
+        # before lifecycle.sh destroy removes the store, and telling it the
+        # database is being kept would be false at exactly the wrong moment.
+        if is_truthy "${KUBE_AGENTS_REQUIRE_MEMORY_ANSWER:-false}"; then
+          print_info "This cluster runs the Hindsight memory store and no memory mode was given, so it is preserved (memory_provider = \"kube_agents_memory\"). Record MEMORY=file or MEMORY=off in install.env (install.sh also takes --memory=file or --memory=off) to replace it."
+        else
+          print_info "This cluster runs the Hindsight memory store and no memory mode was given; generating memory_provider = \"kube_agents_memory\" to match the live install."
+        fi
         ;;
       absent)
         # The API server answered, and answered NotFound for both objects. The
