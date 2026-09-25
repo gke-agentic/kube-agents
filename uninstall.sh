@@ -496,7 +496,7 @@ main() {
       { [ -z "$PARAM_PROJECT_ID" ] || [ -z "$PARAM_CLUSTER_NAME" ] || [ -z "$PARAM_REGION" ]; } &&
       [ -f "$handoff_env_file" ]; then
       print_warning "Not reading ${handoff_env_file}: --source-ref is for tearing down an older release, this file was found only by searching \$HOME, and not all three of --gcp-project-id, --gke-cluster-name and --gcp-region were given to confirm it belongs to the install being torn down."
-      print_info "Pass all three of --gcp-project-id, --gke-cluster-name and --gcp-region to name the install to tear down, or point KUBE_AGENTS_INSTALL_ENV at ${handoff_env_file} (or run from ${HOME}/kube-agents) if that file is the one you mean."
+      print_info "Pass all three of --gcp-project-id, --gke-cluster-name and --gcp-region to name the install to tear down, or point KUBE_AGENTS_INSTALL_ENV at ${handoff_env_file} (or run from ${handoff_install_checkout}) if that file is the one you mean."
       handoff_env_file=""
       handoff_env_was_dropped="true"
     elif [ "$handoff_env_is_a_guess" = "true" ] &&

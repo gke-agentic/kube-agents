@@ -152,6 +152,12 @@ readonly TF_STATE_OBJECT="default.tfstate"
 readonly GCS_OBJECT_ABSENT_PATTERN='matched no objects|NotFoundException|HTTPError 404|not found|does not exist'
 readonly TF_STATE_RC_UNREADABLE=2
 
+# The Hindsight memory store: the provider that deploys it, and the two objects
+# whose presence live_hindsight_state takes as proof that it is there.
+readonly HINDSIGHT_MEMORY_PROVIDER="kube_agents_memory"
+readonly HINDSIGHT_STATEFULSET="hindsight-postgresql"
+readonly HINDSIGHT_API_DEPLOYMENT="hindsight-api"
+
 # Memory mode (the input spelling, recorded in install.env as MEMORY) → the
 # provider name everything downstream reads. The inverse of install.sh's
 # memory_mode_from_provider, and needed here because install.env records the
@@ -161,7 +167,7 @@ readonly TF_STATE_RC_UNREADABLE=2
 # a Hindsight install and the apply would delete it.
 memory_provider_from_mode() {
   case "${1:-}" in
-    hindsight) echo "kube_agents_memory" ;;
+    hindsight) echo "$HINDSIGHT_MEMORY_PROVIDER" ;;
     off) echo "none" ;;
     file) echo "multiuser_memory" ;;
     *) echo "" ;;
@@ -1421,7 +1427,7 @@ live_hindsight_state() {
   # prove it is not. `${spec%% *}` / `${spec#* }` rather than `set --`, which
   # would clobber this function's own positional parameters.
   local spec kind name out rc absent=0
-  for spec in "statefulset hindsight-postgresql" "deployment hindsight-api"; do
+  for spec in "statefulset ${HINDSIGHT_STATEFULSET}" "deployment ${HINDSIGHT_API_DEPLOYMENT}"; do
     kind="${spec%% *}"
     name="${spec#* }"
     rc=0
@@ -1747,17 +1753,17 @@ write_tfvars_from_state() {
     live_hindsight_state "${NAMESPACE:-$DEFAULT_NAMESPACE}"
     case "$LIVE_HINDSIGHT_STATE" in
       present)
-        memory_provider="kube_agents_memory"
-        export MEMORY_PROVIDER="kube_agents_memory"
+        memory_provider="$HINDSIGHT_MEMORY_PROVIDER"
+        export MEMORY_PROVIDER="$HINDSIGHT_MEMORY_PROVIDER"
         # Said per caller, as the unknown arm below is and on the same signal:
         # "preserved" and "to replace it" are true only for a caller that
         # applies next. uninstall.sh generates through here too, immediately
         # before lifecycle.sh destroy removes the store, and telling it the
         # database is being kept would be false at exactly the wrong moment.
         if is_truthy "${KUBE_AGENTS_REQUIRE_MEMORY_ANSWER:-false}"; then
-          print_info "This cluster runs the Hindsight memory store and no memory mode was given, so it is preserved (memory_provider = \"kube_agents_memory\"). Record MEMORY=file or MEMORY=off in install.env (install.sh also takes --memory=file or --memory=off) to replace it."
+          print_info "This cluster runs the Hindsight memory store and no memory mode was given, so it is preserved (memory_provider = \"${HINDSIGHT_MEMORY_PROVIDER}\"). Record MEMORY=file or MEMORY=off in install.env (install.sh also takes --memory=file or --memory=off) to replace it."
         else
-          print_info "This cluster runs the Hindsight memory store and no memory mode was given; generating memory_provider = \"kube_agents_memory\" to match the live install."
+          print_info "This cluster runs the Hindsight memory store and no memory mode was given; generating memory_provider = \"${HINDSIGHT_MEMORY_PROVIDER}\" to match the live install."
         fi
         ;;
       absent)
@@ -1773,7 +1779,7 @@ write_tfvars_from_state() {
         # install has to keep a working way to remove itself.
         if is_truthy "${KUBE_AGENTS_REQUIRE_MEMORY_ANSWER:-false}"; then
           print_error "Cannot tell whether this cluster runs the Hindsight memory store, and no memory mode was given: ${LIVE_HINDSIGHT_REASON:-the cluster could not be reached}."
-          print_info "Continuing would generate memory_provider = \"${DEFAULT_MEMORY_PROVIDER}\" and the apply would delete hindsight-api and hindsight-postgresql, including its database."
+          print_info "Continuing would generate memory_provider = \"${DEFAULT_MEMORY_PROVIDER}\" and the apply would delete ${HINDSIGHT_API_DEPLOYMENT} and ${HINDSIGHT_STATEFULSET}, including its database."
           # Named per caller, as the Autopilot floor refusal below is and for
           # the same reason: upgrade.sh's parse_args has no --memory and answers
           # "Unknown parameter: --memory=file" with exit 2, so sending every
