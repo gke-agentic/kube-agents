@@ -1245,6 +1245,43 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertEqual(self._reported(proc, "INSTALL_CHECKOUT"), str(clone_dir))
         self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
 
+    def test_the_release_is_fetched_from_the_canonical_url_not_the_clones_origin(self):
+        """A fork as `origin` must not decide what the tag means.
+
+        Every other fixture clones $HOME/kube-agents from the same repository
+        KUBE_AGENTS_REPO_URL names, so `fetch origin` and `fetch
+        "$KUBE_AGENTS_REPO_URL"` could not be told apart. It matters more than
+        it looks: a tag that arrives by fetch in this run is exempt from the
+        remote_release_tag_commit cross-check (SOURCES_ADOPTED_CHECKOUT is set
+        only for a ref the checkout already had), so a fetch from the fork would
+        be applied as the release with no second opinion.
+        """
+        home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
+        git = self._git
+        base = home_dir.parent
+        fork_dir = base / "fork.git"
+        fork_work = base / "fork-work"
+        git("clone", "--bare", "--quiet", upstream_url, str(fork_dir), cwd=base)
+        fork_url = fork_dir.as_uri()
+        git("clone", "--quiet", fork_url, str(fork_work), cwd=base)
+        git("config", "user.name", "Fork", cwd=fork_work)
+        git("config", "user.email", "fork@example.com", cwd=fork_work)
+        git("config", "commit.gpgsign", "false", cwd=fork_work)
+        git("checkout", "--quiet", "--detach", "0.2.0", cwd=fork_work)
+        (fork_work / "install.sh").write_text("fork's own 0.3.0\n")
+        git("commit", "--quiet", "-am", "fork 0.3.0", cwd=fork_work)
+        git("tag", "-f", "0.3.0", cwd=fork_work)
+        git("push", "--quiet", "--force", fork_url, "refs/tags/0.3.0", cwd=fork_work)
+        fork_commit = git("rev-parse", "0.3.0^{commit}", cwd=fork_work)
+        self.assertNotEqual(fork_commit, commits["0.3.0"])
+        git("remote", "set-url", "origin", fork_url, cwd=clone_dir)
+
+        proc = self._acquire_from_outside(home_dir, upstream_url, "0.3.0")
+
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+        self.assertEqual(self._head_of(clone_dir), commits["0.3.0"])
+
     def _forge_local_tag(self, clone_dir, tag):
         """Give the clone a tag of its own that upstream does not agree with.
 
