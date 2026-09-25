@@ -629,6 +629,21 @@ class TestShellAncestry(unittest.TestCase):
             path.write_text(SEEDED_CONTEXT)
             self.assertEqual(SEEDED_CONTEXT, credential_proxy_client.shell_context())
 
+    def test_a_fifo_pin_is_refused_without_blocking(self):
+        import threading
+
+        path, env, pid, ppid = self._pinned_shell()
+        os.mkfifo(path)
+        result = []
+        with env, pid, ppid:
+            reader = threading.Thread(
+                target=lambda: result.append(credential_proxy_client.shell_context()), daemon=True
+            )
+            reader.start()
+            reader.join(timeout=5)
+        self.assertFalse(reader.is_alive(), "shell_context() blocked opening a FIFO")
+        self.assertEqual([None], result)
+
     def test_an_execd_kubectl_reads_its_own_key_first(self):
         # `get-credentials x ; kubectl` -- bash execs the last command, so the
         # kubectl is the process the pin was recorded under.

@@ -578,7 +578,12 @@ def shell_context() -> str | None:
     uid = os.geteuid()
     for key in ([own] if own else []) + _shell_keys():
         try:
-            fd = os.open(directory / f"{key}{SHELL_CONTEXT_SUFFIX}", os.O_RDONLY | os.O_NOFOLLOW)
+            # O_NONBLOCK: a FIFO planted under the name would otherwise hold
+            # open() until a writer appears, before fstat can refuse it.
+            fd = os.open(
+                directory / f"{key}{SHELL_CONTEXT_SUFFIX}",
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            )
         except OSError:
             continue
         with os.fdopen(fd, "rb") as stream:

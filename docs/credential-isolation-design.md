@@ -693,10 +693,12 @@ because the sandbox never had a handle on the document that is opened.
 
 The same substitution is applied to a `--kubeconfig` flag in the argument
 vector, which `kubectl` prefers over the environment; covering only the
-environment would leave the flag as an equivalent path. `get-credentials` is
-handled as the one command permitted to author a kubeconfig: it writes into the
-broker's own directory, the result is filed under the context it selects, and the
-context name is what the caller gets back. The visible pin
+environment would leave the flag as an equivalent path. Shim and broker scan
+only up to the `--` where kubectl's own flags end. `get-credentials` is
+handled as the one command permitted to author a kubeconfig: gcloud writes into
+the broker's own directory, the result is filed under the context it selects, and
+the context name is what the caller gets back; the shim files the returned copy
+on the sandbox side. The visible pin
 that profile scaffolding records and the Cluster Agent preflight inspects
 therefore still exists, without being what a later command opens.
 
@@ -743,13 +745,13 @@ Consequences:
   where bash exec'd it in the shell's place: both step over `timeout`, `xargs`
   or a helper script and key only processes whose `/proc` command name is a
   shell. So a `timeout 60 gcloud …`
-  fetch pins the line and replaces an earlier fetch's pin in it, and a pin
-  file named for sshd, which outlives every command line on the Hermes
-  connection, is never read. sshd is pid 1 in the sandbox and the walk stops
-  there, so no shell above it can be keyed. A pin counts only when it is a
-  regular file, not a link, owned by the uid reading it, so the hermes
+  fetch pins the line and replaces an earlier fetch's pin in it. sshd, which
+  outlives every command line on the Hermes connection, is never keyed, so no
+  pin outlives the line. sshd is pid 1 in the sandbox and the walk stops
+  there, so no shell above it can be keyed either. A pin counts only when it is
+  a regular file, not a link or a FIFO, owned by the uid reading it, so the hermes
   principal, whose `HERMES_HOME` is the agent-owned `/opt/data`, is not steered
-  by a pin the agent planted. The pin lasts one command line and
+  or stalled by a file the agent planted. The pin lasts one command line and
   never becomes the pod's default: the next command and a resumed card have a
   different shell and read the host cluster. A backgrounded subshell of two or more
   commands, `( get-credentials a && … ) &`, pins that subshell alone, so
