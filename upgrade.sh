@@ -653,7 +653,9 @@ verify_local_source_clean() {
 }
 
 # What the canonical repository says a release tag names, printed as a commit
-# SHA. Fails when the remote cannot be reached or does not carry the tag.
+# SHA. Returns 1 when the remote could not be asked, and 2 when it answered and
+# carries no such tag: `git ls-remote` exits 0 with no output for a missing ref,
+# and the two need different remedies (retry the network, or delete the tag).
 #
 # Asked for the peeled form first: an annotated tag's own object is not the
 # commit, and comparing a checkout's HEAD against it would never match.
@@ -665,7 +667,7 @@ remote_release_tag_commit() {
   if [ -z "$commit" ]; then
     commit="$(printf '%s\n' "$listing" | awk -v ref="refs/tags/${expected_ref}" -F'\t' '$2 == ref {print $1; exit}')"
   fi
-  [ -n "$commit" ] || return 1
+  [ -n "$commit" ] || return 2
   printf '%s' "$commit"
 }
 
@@ -737,11 +739,20 @@ verify_local_source_ref() {
   # including when the remote cannot be reached: the fetch it replaces needed
   # the network too.
   if [ "$SOURCES_ADOPTED_CHECKOUT" = "true" ] && ! ref_is_commit_sha "$expected_ref"; then
-    local preview_only="false" remote_commit=""
+    local preview_only="false" remote_commit="" remote_rc=0
     if [ "$PARAM_DRY_RUN" = "true" ] || [ "$PARAM_PLAN" = "true" ]; then
       preview_only="true"
     fi
-    if ! remote_commit="$(remote_release_tag_commit "$expected_ref")"; then
+    remote_commit="$(remote_release_tag_commit "$expected_ref")" || remote_rc=$?
+    if [ "$remote_rc" -eq 2 ]; then
+      if [ "$preview_only" = "true" ]; then
+        print_warning "${KUBE_AGENTS_REPO_URL} does not carry '${expected_ref}', so the '${expected_ref}' in ${repo_dir} is not a published release. This preview reads the local one."
+      else
+        print_error "Refusing to upgrade from ${repo_dir}: ${KUBE_AGENTS_REPO_URL} does not carry '${expected_ref}', so that checkout's '${expected_ref}' is not a published release."
+        print_info "That checkout's tag did not come from the release. Delete it ('git -C ${repo_dir} tag -d ${expected_ref}'), or pass a release tag ${KUBE_AGENTS_REPO_URL} publishes."
+        return 1
+      fi
+    elif [ "$remote_rc" -ne 0 ]; then
       if [ "$preview_only" = "true" ]; then
         print_warning "Could not ask ${KUBE_AGENTS_REPO_URL} what '${expected_ref}' names, so this preview is trusting the tag in ${repo_dir}."
       else

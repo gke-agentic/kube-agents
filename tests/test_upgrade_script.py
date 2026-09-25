@@ -1316,6 +1316,38 @@ echo "INSTALL_CHECKOUT=$install_checkout"
         self.assertIn(f"so this preview is trusting the tag in {clone_dir}", combined)
         self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
 
+    def test_a_tag_the_remote_does_not_carry_is_refused_as_unpublished(self):
+        """A reachable remote that lacks the tag is an answer, not a network failure.
+
+        `git ls-remote` exits 0 with no output for a missing ref. Reporting that
+        as "could not ask" sends the operator to retry the network, when the
+        remedy is to delete the hand-made tag.
+        """
+        home_dir, clone_dir, upstream_url, _ = self._existing_clone_fixture("0.2.0")
+        self._forge_local_tag(clone_dir, "0.9.9")
+
+        proc = self._acquire_from_outside(home_dir, upstream_url, "0.9.9")
+
+        self.assertNotEqual(proc.returncode, 0)
+        combined = proc.stdout + proc.stderr
+        self.assertIn(f"{upstream_url} does not carry '0.9.9'", combined)
+        self.assertIn(f"git -C {clone_dir} tag -d 0.9.9", combined)
+        self.assertNotIn("Could not ask", combined)
+        self.assertNotIn("Verified upgrade scripts and image ref", combined)
+
+    def test_a_preview_over_a_tag_the_remote_does_not_carry_says_so(self):
+        """The preview arm of the same answer: it warns and reads the local tag."""
+        home_dir, clone_dir, upstream_url, _ = self._existing_clone_fixture("0.2.0")
+        self._forge_local_tag(clone_dir, "0.9.9")
+
+        proc = self._acquire_from_outside(home_dir, upstream_url, "0.9.9", preview_flag="PARAM_PLAN")
+
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        combined = proc.stdout + proc.stderr
+        self.assertIn(f"{upstream_url} does not carry '0.9.9'", combined)
+        self.assertNotIn("Could not ask", combined)
+        self.assertEqual(self._reported(proc, "REPO_DIR"), str(clone_dir))
+
     def test_an_adopted_checkout_at_a_commit_sha_skips_remote_tag_verification(self):
         """A 40-hex commit SHA is self-verifying (`! ref_is_commit_sha "$expected_ref"`),
         so `verify_local_source_ref` skips `remote_release_tag_commit` even when
