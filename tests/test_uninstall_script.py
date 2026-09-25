@@ -921,6 +921,90 @@ class SourceRefDispatchTest(unittest.TestCase):
             ],
         )
 
+    def test_source_ref_does_not_read_a_home_guess_that_omits_a_coordinate(self):
+        """An absent key is not a match.
+
+        Each comparison used to short-circuit to "agrees" when the file lacked
+        the key, so a $HOME file with no PROJECT_ID was "confirmed" by any
+        --gcp-project-id: its NAMESPACE was forwarded, its state prefix
+        exported, and KUBE_AGENTS_INSTALL_ENV pointed the child at it, while
+        the flags named an install in another project.
+        """
+        flags = [
+            "--source-ref=v0.4.0",
+            "--non-interactive",
+            "--gcp-project-id=project-b",
+            "--gke-cluster-name=install-a",
+            "--gcp-region=us-east1",
+        ]
+        rest = (
+            'CLUSTER_NAME="install-a"\n'
+            'REGION="us-east1"\n'
+            'NAMESPACE="install-a-ns"\n'
+            'KUBE_AGENTS_STATE_PREFIX="install-a-state"\n'
+        )
+        for label, home_env in (
+            ("absent", rest),
+            ("empty", 'PROJECT_ID=""\n' + rest),
+        ):
+            with self.subTest(project_id=label):
+                proc, log = self._run(
+                    ref_carries_uninstall=True,
+                    ref_speaks_domain_scoped=True,
+                    args=flags,
+                    home_install_env=home_env,
+                )
+                combined = proc.stdout + proc.stderr
+                self.assertEqual(proc.returncode, 0, combined)
+                self.assertIn("Not reading", combined)
+                self.assertIn("does not record all of PROJECT_ID, CLUSTER_NAME and REGION", combined)
+                self.assertNotIn("Loaded install configuration from:", combined)
+                self.assertIsNotNone(log, combined)
+                # Exactly the flags: no --agent-namespace from its NAMESPACE and
+                # no ENV_FILE line pointing the child back at it.
+                self.assertEqual(log.split(), flags[1:])
+
+    def test_source_ref_skips_a_home_guess_that_fails_while_sourced(self):
+        """`bash -n` checks syntax only. A guess that expands an unset variable
+        passes it, used to read as "does not name another install" when the
+        probe's subshell died under `set -u`, and then aborted the run in the
+        load arm with a bare "unbound variable" -- for a file nobody named, on
+        a run whose three flags already name the install.
+        """
+        proc, log = self._run(
+            ref_carries_uninstall=True,
+            ref_speaks_domain_scoped=True,
+            args=[
+                "--source-ref=v0.3.0",
+                "--non-interactive",
+                "--gcp-project-id=project-a",
+                "--gke-cluster-name=install-a",
+                "--gcp-region=us-east1",
+            ],
+            home_install_env=(
+                'PROJECT_ID="project-a"\n'
+                'CLUSTER_NAME="install-a"\n'
+                'REGION="us-east1"\n'
+                "GITOPS_TOKEN=$KUBE_AGENTS_TEST_NEVER_SET\n"
+            ),
+        )
+        combined = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 0, combined)
+        self.assertIn("Not reading", combined)
+        self.assertIn("it failed while being read", combined)
+        self.assertNotIn("unbound variable", combined)
+        self.assertNotIn("Loaded install configuration from:", combined)
+        self.assertIsNotNone(log, combined)
+        self.assertEqual(
+            log.split(),
+            [
+                "--non-interactive",
+                "--gcp-project-id=project-a",
+                "--gke-cluster-name=install-a",
+                "--gcp-region=us-east1",
+            ],
+        )
+
     def test_source_ref_says_so_when_it_finds_no_install_env(self):
         """The dangerous case the arm used to pass over in silence.
 

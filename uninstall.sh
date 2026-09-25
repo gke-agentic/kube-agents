@@ -350,29 +350,44 @@ resolve_uninstall_env_file() {
   fi
 }
 
-# Whether an install.env records coordinates that contradict the ones named on
-# the command line.
+# What a guessed install.env says about the three command-line coordinates,
+# printed as one word:
+#   confirms   -- it records all three, and each matches its flag;
+#   differs    -- it records one that contradicts its flag;
+#   incomplete -- nothing contradicts, but it lacks one of the three, so the
+#                 flags cannot confirm it (an absent key is not a match);
+#   unreadable -- sourcing it failed, e.g. it expands a variable that is unset
+#                 under the inherited `set -u`.
+# Only "confirms" lets a guess be read. Called only when all three PARAM_* are
+# set.
 #
 # Read in a SUBSHELL, unlike every other read of this file. It is asked only
 # about files the lookup guessed at, and sourcing one into this shell merely to
 # inspect it would export its NAMESPACE, MEMORY, GITOPS_* and state-bucket keys
 # -- and there is no taking an open-ended set of keys back out again. `set -a`
-# is still needed inside, because the file's own assignments are plain.
-#
-# Exits 0 for "names another install", so it reads as a condition.
-handoff_env_names_another_install() {
-  local env_file="$1"
-  (
+# is still needed inside, because the file's own assignments are plain. The
+# file's own output is discarded so only the verdict reaches stdout; a failure
+# while sourcing ends the subshell with no verdict, which is what "unreadable"
+# stands for, and the warning the caller prints names it.
+handoff_env_verdict() {
+  local env_file="$1" verdict=""
+  verdict="$(
     unset PROJECT_ID CLUSTER_NAME REGION NAMESPACE
     set -a
     # shellcheck disable=SC1090
-    . "$env_file"
+    . "$env_file" >/dev/null 2>&1
     set +a
-    [ -z "$PARAM_PROJECT_ID" ] || [ -z "${PROJECT_ID:-}" ] || [ "$PARAM_PROJECT_ID" = "$PROJECT_ID" ] || exit 0
-    [ -z "$PARAM_CLUSTER_NAME" ] || [ -z "${CLUSTER_NAME:-}" ] || [ "$PARAM_CLUSTER_NAME" = "$CLUSTER_NAME" ] || exit 0
-    [ -z "$PARAM_REGION" ] || [ -z "${REGION:-}" ] || [ "$PARAM_REGION" = "$REGION" ] || exit 0
-    exit 1
-  )
+    if { [ -n "${PROJECT_ID:-}" ] && [ "$PROJECT_ID" != "$PARAM_PROJECT_ID" ]; } ||
+      { [ -n "${CLUSTER_NAME:-}" ] && [ "$CLUSTER_NAME" != "$PARAM_CLUSTER_NAME" ]; } ||
+      { [ -n "${REGION:-}" ] && [ "$REGION" != "$PARAM_REGION" ]; }; then
+      echo "differs"
+    elif [ -z "${PROJECT_ID:-}" ] || [ -z "${CLUSTER_NAME:-}" ] || [ -z "${REGION:-}" ]; then
+      echo "incomplete"
+    else
+      echo "confirms"
+    fi
+  )" || verdict=""
+  printf '%s\n' "${verdict:-unreadable}"
 }
 
 # Compare the command-line coordinates against what install.env itself recorded.
@@ -489,9 +504,12 @@ main() {
     # conflict refusal below and keeps `set -a` from exporting the stranger's
     # NAMESPACE, MEMORY, GITOPS_* and state-bucket keys into the child release.
     #
-    # Only when all three coordinates are given on the command line and agree
-    # with the $HOME file is it read, so its NAMESPACE and other settings travel
-    # with the confirmed target.
+    # Only when all three coordinates are given on the command line and the
+    # $HOME file records all three and matches each is it read, so its
+    # NAMESPACE and other settings travel with the confirmed target. A file
+    # that omits a key is not confirmed by it: any flag would "agree" with an
+    # absent PROJECT_ID, and loading it would hand the child that file's state
+    # backend under another install's name.
     if [ "$handoff_env_is_a_guess" = "true" ] &&
       { [ -z "$PARAM_PROJECT_ID" ] || [ -z "$PARAM_CLUSTER_NAME" ] || [ -z "$PARAM_REGION" ]; } &&
       [ -f "$handoff_env_file" ]; then
@@ -499,25 +517,28 @@ main() {
       print_info "Pass all three of --gcp-project-id, --gke-cluster-name and --gcp-region to name the install to tear down, or point KUBE_AGENTS_INSTALL_ENV at ${handoff_env_file} (or run from ${handoff_install_checkout}) if that file is the one you mean."
       handoff_env_file=""
       handoff_env_was_dropped="true"
-    elif [ "$handoff_env_is_a_guess" = "true" ] &&
-      [ -n "$PARAM_PROJECT_ID" ] && [ -n "$PARAM_CLUSTER_NAME" ] && [ -n "$PARAM_REGION" ] &&
-      [ -f "$handoff_env_file" ] && bash -n "$handoff_env_file" 2>/dev/null &&
-      handoff_env_names_another_install "$handoff_env_file"; then
-      print_warning "Not reading ${handoff_env_file}: it records a different install, it was found by searching \$HOME rather than named, and the flags already say which install to tear down."
-      print_info "Forwarding --gcp-project-id=${PARAM_PROJECT_ID}, --gke-cluster-name=${PARAM_CLUSTER_NAME} and --gcp-region=${PARAM_REGION} to the '${PARAM_SOURCE_REF}' release. Point KUBE_AGENTS_INSTALL_ENV at an install.env to have one read instead."
-      handoff_env_file=""
-      handoff_env_was_dropped="true"
-    elif [ "$handoff_env_is_a_guess" = "true" ] &&
-      [ -n "$PARAM_PROJECT_ID" ] && [ -n "$PARAM_CLUSTER_NAME" ] && [ -n "$PARAM_REGION" ] &&
-      [ -f "$handoff_env_file" ] && ! bash -n "$handoff_env_file" 2>/dev/null; then
-      # A guess nobody named must not abort a teardown the flags fully describe:
-      # the load arm below exits on a file that is not valid shell, which is
-      # right for a file the operator pointed at and wrong for one found by
-      # searching $HOME.
-      print_warning "Not reading ${handoff_env_file}: it is not valid shell, it was found by searching \$HOME rather than named, and the flags already say which install to tear down."
-      print_info "Forwarding --gcp-project-id=${PARAM_PROJECT_ID}, --gke-cluster-name=${PARAM_CLUSTER_NAME} and --gcp-region=${PARAM_REGION} to the '${PARAM_SOURCE_REF}' release. Point KUBE_AGENTS_INSTALL_ENV at an install.env to have one read instead."
-      handoff_env_file=""
-      handoff_env_was_dropped="true"
+    elif [ "$handoff_env_is_a_guess" = "true" ] && [ -f "$handoff_env_file" ]; then
+      # All three flags are set here. A guess nobody named must not abort a
+      # teardown the flags fully describe: the load arm below exits on a file
+      # that is not valid shell or fails while sourced, which is right for a
+      # file the operator pointed at and wrong for one found by searching $HOME.
+      local handoff_env_skip_reason=""
+      if ! bash -n "$handoff_env_file" 2>/dev/null; then
+        handoff_env_skip_reason="it is not valid shell"
+      else
+        case "$(handoff_env_verdict "$handoff_env_file")" in
+          confirms) ;;
+          differs) handoff_env_skip_reason="it records a different install" ;;
+          incomplete) handoff_env_skip_reason="it does not record all of PROJECT_ID, CLUSTER_NAME and REGION, so the flags cannot confirm it belongs to the install being torn down" ;;
+          *) handoff_env_skip_reason="it failed while being read (such as expanding a variable that is not set)" ;;
+        esac
+      fi
+      if [ -n "$handoff_env_skip_reason" ]; then
+        print_warning "Not reading ${handoff_env_file}: ${handoff_env_skip_reason}, it was found by searching \$HOME rather than named, and the flags already say which install to tear down."
+        print_info "Forwarding --gcp-project-id=${PARAM_PROJECT_ID}, --gke-cluster-name=${PARAM_CLUSTER_NAME} and --gcp-region=${PARAM_REGION} to the '${PARAM_SOURCE_REF}' release. Point KUBE_AGENTS_INSTALL_ENV at an install.env to have one read instead."
+        handoff_env_file=""
+        handoff_env_was_dropped="true"
+      fi
     fi
 
     unset PROJECT_ID CLUSTER_NAME REGION NAMESPACE
