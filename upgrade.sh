@@ -1090,10 +1090,12 @@ acquire_upgrade_sources() {
     # of "nothing": moving it to the requested release would leave the next
     # thing run from that directory — install.sh, uninstall.sh, terraform by
     # hand — on a revision the cluster is not on, after a command that said it
-    # had changed nothing. So a preview reuses the checkout only when it is
-    # already at the ref, and otherwise reads its engine from a temporary copy.
-    # It still loads the install's configuration from the checkout; that is a
-    # read.
+    # had changed nothing. So a preview never moves the checkout: it reuses it
+    # only when it is already at the ref, and otherwise reads its engine from a
+    # temporary copy, loading only the install's configuration from the
+    # checkout. Reuse is not read-only: `--plan` over an at-ref checkout
+    # regenerates its terraform.tfvars and initialises .terraform/ there, as a
+    # real upgrade would; neither is tracked, and HEAD stays where it was.
     local preview="false"
     if [ "$PARAM_PLAN" = "true" ] || [ "$PARAM_DRY_RUN" = "true" ]; then
       preview="true"

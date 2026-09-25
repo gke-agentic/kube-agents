@@ -262,7 +262,7 @@ def _expand(value, scope):
     expand from its own environment and from any other assignment in the file;
     both are deliberate. Reading the environment would make protection depend on
     the shell a command happened to run in, and keeping non-allowlisted values
-    out of `scope` keeps the API keys and tokens these files also hold out of
+    out of `scope` keeps the API keys and tokens the file also holds out of
     this function entirely.
 
     A reference `scope` cannot resolve is left as written rather than dropped:

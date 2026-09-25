@@ -34,6 +34,14 @@ C_RESET="\033[0m"
 # before it has a checkout to read it from; tests/test_install_script.py pins
 # the three equal.
 KUBE_AGENTS_REPO_URL="https://github.com/gke-labs/kube-agents.git"
+# The install checkout install.sh leaves when it runs outside one. install.sh
+# and upgrade.sh define the same function; tests/test_upgrade_script.py pins
+# the paths all three build equal. Every caller here checks HOME first.
+kube_agents_clone_dir() { printf '%s/kube-agents' "${HOME:?the teardown looks for the install checkout under HOME when it does not run from one}"; }
+# The file whose presence makes a directory a kube-agents checkout this script
+# can drive, and the shared installer library inside it.
+KUBE_AGENTS_ENGINE_MARKER="terraform/examples/full-install/lifecycle.sh"
+KUBE_AGENTS_INSTALLER_COMMON_MARKER="scripts/installer/installer_common.sh"
 
 # Process Lock File & Error Trap Handling
 #
@@ -442,14 +450,14 @@ main() {
     # one-liner aimed at the install checkout rather than falling back to
     # DEFAULT_CLUSTER_NAME and gcloud's active project in the child.
     local wrapper_checkout=""
-    if [ -f "${script_dir}/terraform/examples/full-install/lifecycle.sh" ]; then
+    if [ -f "${script_dir}/${KUBE_AGENTS_ENGINE_MARKER}" ]; then
       wrapper_checkout="$script_dir"
-    elif [ -f "$(pwd)/terraform/examples/full-install/lifecycle.sh" ]; then
+    elif [ -f "$(pwd)/${KUBE_AGENTS_ENGINE_MARKER}" ]; then
       wrapper_checkout="$(pwd)"
     fi
     local handoff_install_checkout=""
     if [ -z "$wrapper_checkout" ] && [ -n "${HOME:-}" ]; then
-      handoff_install_checkout="${HOME}/kube-agents"
+      handoff_install_checkout="$(kube_agents_clone_dir)"
     fi
     local handoff_env_file
     handoff_env_file="$(resolve_uninstall_env_file "$wrapper_checkout" "$handoff_install_checkout")"
@@ -635,9 +643,9 @@ main() {
     print_info "Handing over to the '${PARAM_SOURCE_REF}' release's own uninstall.sh..."
     TEMP_REPO_DIR=""
     exec bash "${repo_dir}/uninstall.sh" "${dispatch_args[@]}"
-  elif [ -f "${script_dir}/terraform/examples/full-install/lifecycle.sh" ]; then
+  elif [ -f "${script_dir}/${KUBE_AGENTS_ENGINE_MARKER}" ]; then
     repo_dir="$script_dir"
-  elif [ -f "$(pwd)/terraform/examples/full-install/lifecycle.sh" ]; then
+  elif [ -f "$(pwd)/${KUBE_AGENTS_ENGINE_MARKER}" ]; then
     repo_dir="$(pwd)"
   else
     TEMP_REPO_DIR="$(mktemp -d)"
@@ -655,7 +663,7 @@ main() {
   # Defaults, validators, and the terraform.tfvars generator shared with
   # install.sh. Print helpers are already defined above, as the file expects.
   # shellcheck disable=SC1091
-  source "${repo_dir}/scripts/installer/installer_common.sh"
+  source "${repo_dir}/${KUBE_AGENTS_INSTALLER_COMMON_MARKER}"
   # install.env is optional here: unlike upgrade.sh, a teardown can proceed on
   # --gcp-project-id/--gke-cluster-name/--gcp-region alone. On a non-checkout
   # run (TEMP_REPO_DIR is non-empty, e.g. curl … | bash), the lookup reaches
@@ -664,7 +672,7 @@ main() {
   # $HOME/kube-agents/install.env and destroys another install.
   local install_checkout=""
   if [ -n "${TEMP_REPO_DIR:-}" ] && [ -n "${HOME:-}" ]; then
-    install_checkout="${HOME}/kube-agents"
+    install_checkout="$(kube_agents_clone_dir)"
   fi
   local install_env_file
   install_env_file="$(resolve_uninstall_env_file "$repo_dir" "$install_checkout")"

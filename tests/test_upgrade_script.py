@@ -18,6 +18,7 @@ from tests.testing.common import (
     INVALID_IMMUTABLE_REFS,
     UPGRADER_HELP_BANNER,
     VALID_IMMUTABLE_REFS,
+    create_minimal_tools_bin,
     get_isolated_test_env,
 )
 from tests.testing.release import (
@@ -1656,8 +1657,13 @@ exit {exit_code}
         home_dir, clone_dir, upstream_url, commits = self._existing_clone_fixture("0.2.0")
         outside_dir = home_dir.parent / "outside"
         outside_dir.mkdir(exist_ok=True)
-        sterile_bin = home_dir.parent / "sterile-bin"
-        sterile_bin.mkdir(exist_ok=True)
+        # git and the core utilities are on PATH, so acquire_upgrade_sources
+        # would fetch into and move the checkout if it ran; gcloud, kubectl and
+        # helm are not, so the tool check must stop the run first. HEAD alone
+        # cannot tell: restore_moved_checkout returns a moved checkout on any
+        # pre-apply exit. So each run also asserts acquire never touched it.
+        sterile_bin = create_minimal_tools_bin(home_dir.parent / "sterile")
+        self.assertIsNotNone(shutil.which("git", path=str(sterile_bin)))
         isolated_upgrade_sh = outside_dir / "upgrade.sh"
         isolated_upgrade_sh.write_text(
             _UPGRADE_SH.read_text().replace(
@@ -1680,8 +1686,11 @@ exit {exit_code}
             env=isolated_env,
             cwd=str(outside_dir),
         )
-        self.assertEqual(proc.returncode, 1)
-        self.assertIn("Required CLI tool", proc.stdout + proc.stderr)
+        combined = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 1, combined)
+        self.assertIn("Required CLI tool", combined)
+        self.assertNotIn("Using existing repository", combined)
+        self.assertNotIn("Moved ", combined)
         self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
 
         conflicting = subprocess.run(
@@ -1698,8 +1707,11 @@ exit {exit_code}
             env=isolated_env,
             cwd=str(outside_dir),
         )
-        self.assertEqual(conflicting.returncode, 1)
-        self.assertIn("--dry-run and --plan are different previews", conflicting.stdout + conflicting.stderr)
+        combined = conflicting.stdout + conflicting.stderr
+        self.assertEqual(conflicting.returncode, 1, combined)
+        self.assertIn("--dry-run and --plan are different previews", combined)
+        self.assertNotIn("Using existing repository", combined)
+        self.assertNotIn("Moved ", combined)
         self.assertEqual(self._head_of(clone_dir), commits["0.2.0"])
 
     def _acquire_through_a_real_pipe(
@@ -2398,16 +2410,31 @@ class FrontDoorsAgreeOnTheInstallCheckoutTest(unittest.TestCase):
                 paths[script.name] = proc.stdout.strip()
         self.assertEqual(paths["install.sh"], "/h/kube-agents")
         self.assertEqual(paths["upgrade.sh"], paths["install.sh"])
+        # uninstall.sh takes its lock at source time, so only its definition
+        # is evaluated rather than the whole script sourced.
+        definition = re.search(
+            r"^kube_agents_clone_dir\(\) \{.*\}$", (_REPO_ROOT / "uninstall.sh").read_text(), re.MULTILINE
+        )
+        self.assertIsNotNone(definition, "uninstall.sh does not define kube_agents_clone_dir")
+        proc = subprocess.run(
+            ["bash", "-c", f"set -u\n{definition.group(0)}\nkube_agents_clone_dir"],
+            capture_output=True,
+            text=True,
+            env={"HOME": "/h", "PATH": os.environ["PATH"]},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.strip(), paths["install.sh"])
 
 
 class UpgradeRunsAreSerialisedTest(unittest.TestCase):
     """install.sh and upgrade.sh share one checkout lock; uninstall.sh has its own.
 
     Both install.sh and upgrade.sh move $HOME/kube-agents onto the release they
-    are applying (`refresh_existing_clone`, `restore_moved_checkout`) and write
-    `terraform.tfvars` inside it, so an install and an upgrade running at once
-    would take turns moving that one checkout while both read terraform and
-    charts out of it.
+    are applying (each through its own `refresh_existing_clone`; upgrade.sh
+    also returns it with `restore_moved_checkout` on a pre-apply refusal) and
+    write `terraform.tfvars` inside it, so an install and an upgrade running at
+    once would take turns moving that one checkout while both read terraform
+    and charts out of it.
     """
 
     _FRONT_DOORS = ("install.sh", "uninstall.sh", "upgrade.sh")

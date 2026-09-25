@@ -213,6 +213,10 @@ class InstallerCommonTest(unittest.TestCase):
                     "PROJECT_ID": "test-project",
                     "CLUSTER_NAME": "test-cluster",
                     "REGION": "us-central1",
+                    # The generator reads both as ${VAR:-}, so empty is unset;
+                    # a developer's exported memory mode must not steer a test.
+                    "MEMORY": "",
+                    "MEMORY_PROVIDER": "",
                     **(env or {}),
                 },
                 bin_dir=str(bin_dir),
