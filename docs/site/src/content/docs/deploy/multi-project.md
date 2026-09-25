@@ -21,8 +21,8 @@ differently:
   only):** The Platform Agent can immediately inspect resources in the target
   project via `gcloud`, and scheduled governance audits and fleet upgrade checks
   automatically discover every project the agent's identity can list
-  (`gcloud projects list` unioned with `GCP_PROJECT_ID`, or
-  `MONITORED_PROJECT_IDS` when pinned). Every audit qualifies cluster names with
+  (`gcloud projects list` unioned with the host project), so the IAM grant is
+  what sets their scope. Every audit qualifies cluster names with
   their project ID (`<project>/<cluster>`, or `<project>/<location>/<name>` in
   `fleet-consistency-drift`) so identical cluster names in different projects
   never collide. If the project listing fails, or a project cannot be read, the
@@ -185,5 +185,12 @@ kubectl exec -i deployment/platform-agent-gateway -n kubeagents-system \
 1. If you added the project to `spec.scope.projects`, remove it from that list
    (keeping `spec.scope: {projects: []}` if it was the last additional project)
    so the reconciler retires its Cluster Agent profiles over two clean runs.
-2. Revoke the IAM bindings on the target project (or folder) so the Platform
-   Agent and its scheduled audits stop querying it.
+2. If you onboarded clusters in chat, add each one to
+   [`spec.scope.exclude.clusters`](/kube-agents/operator/platformagent-crd/#specscope)
+   (`projectId`, `location`, `clusterName`). The reconciler keeps a
+   chat-onboarded profile it did not create, and removes an excluded one on its
+   next run.
+3. Revoke the IAM bindings on the target project so the Platform Agent and its
+   scheduled audits stop querying it. A folder-level grant cannot be revoked for
+   one project alone; move the project out of the folder or grant per project
+   instead.

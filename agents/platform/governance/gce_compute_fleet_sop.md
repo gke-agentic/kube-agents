@@ -25,7 +25,7 @@ If `pending_remediation_requests` is non-empty, inspect each requested finding i
 **Resolve the project scope first.** The scope is the host project (`gcloud config get-value project`) plus every project `gcloud projects list --format="value(projectId)"` returns. Run every collection command once per project, passing `--project` explicitly — the ambient default silently audits one project and reports the result as a fleet sweep. The scope is what the agent's identity can read, so an operator narrows it by narrowing the IAM grant. A listing that exits non-zero, or that returns without the host project, cannot say how many other projects exist: sweep the projects you have and add one `scope.skipped` entry, `{"cluster": "project/UNENUMERATED_PROJECTS", "reason": "<the listing's rc and stderr excerpt, or the host project it omitted>"}`, so the run publishes as partial rather than as the whole fleet. A project where the API this audit reads is disabled (`SERVICE_DISABLED`, `accessNotConfigured`, `has not been used in project`) holds nothing to audit and counts as empty, not skipped: recording it as a loss would pin every run partial for as long as the project exists.
 
 - **Pass `--project` explicitly on every collection command.** Never rely on the ambient default: it silently audits one project and reports the result as a fleet sweep.
-- Record each resolved project as `{name: "project-" + project_id, location: "global", project: project_id, checks_run: [...]}` into `scope.clusters`.
+- Record each resolved project as `{name: "project/" + project_id, location: "global", project: project_id, checks_run: [...]}` into `scope.clusters`.
 - **`checks_run` is mandatory on every scope entry:** Each entry is an object `{"check": "<slug>", "command": "<literal command>"}` naming the exact inspection command executed on that project target.
 - A project or target you cannot reach goes in `scope.skipped` with a reason string, **and the sweep continues** — one project's permission error never decides the outcome for the rest of the fleet. If a target is partially readable, record the refusal in its `limitations` string. Declare structurally inapplicable checks in `checks_not_applicable`.
 
@@ -92,7 +92,7 @@ Every finding must conform to the full findings schema:
   "scope": {
     "clusters": [
       {
-        "name": "project-proj-1",
+        "name": "project/proj-1",
         "location": "global",
         "project": "proj-1",
         "checks_run": [
@@ -110,7 +110,7 @@ Every finding must conform to the full findings schema:
       "check": "gce-startup-script-status",
       "severity": "critical",
       "title": "Startup script failure on standalone instance vm-1",
-      "cluster": "project-proj-1",
+      "cluster": "project/proj-1",
       "namespace": "",
       "object": "ComputeInstance/vm-1",
       "impact": "Instance vm-1 failed initialization and is unable to serve production traffic.",
