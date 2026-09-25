@@ -213,6 +213,28 @@ class TestGetCredentialsWritesTheFileOnThisSide(SubmittedPayloadTestCase):
         self.run_it(self.ARGV, {"KUBECONFIG": str(self.destination)})
         self.assertEqual(self.destination.read_text(encoding="utf-8"), self.GENERATED)
 
+    def test_a_refetch_replaces_the_pin_and_leaves_nothing_staged(self):
+        # The Cluster Agent's pin is read by every kubectl of that profile, so
+        # it is staged and renamed like the implicit file, never truncated.
+        self.destination.parent.mkdir(parents=True)
+        self.destination.write_text("stale", encoding="utf-8")
+        with patch.object(
+            credential_proxy_client, "_replace_file", wraps=credential_proxy_client._replace_file
+        ) as writer:
+            captured = self.run_it(self.ARGV, {"KUBECONFIG": str(self.destination)})
+        self.assertEqual(0, captured["exit_code"])
+        writer.assert_called_once_with(self.destination, self.GENERATED)
+        self.assertEqual(self.destination.read_text(encoding="utf-8"), self.GENERATED)
+        self.assertEqual([self.destination], list(self.destination.parent.iterdir()))
+
+    def test_an_unwritable_destination_fails_the_command(self):
+        # Unlike the implicit file, the caller named this path, so not landing
+        # it is a failure -- and that still holds with the staged writer.
+        blocker = self.directory / "not-a-directory"
+        blocker.write_text("", encoding="utf-8")
+        captured = self.run_it(self.ARGV, {"KUBECONFIG": str(blocker / "kubeconfig.yaml")})
+        self.assertEqual(1, captured["exit_code"])
+
     def test_no_destination_still_asks_for_the_file_back(self):
         # Before #1968 nothing came back, and the context-less kubectl that
         # followed read the host cluster (#1852's default) and reported a

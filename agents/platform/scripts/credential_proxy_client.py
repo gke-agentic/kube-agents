@@ -412,7 +412,8 @@ def _replace_file(path: Path, text: str) -> None:
 
     A plain truncate-and-write leaves a window where the file is empty: a
     kubectl reading the card pin in it falls back to the host with exit 0, and
-    one exporting the per-target kubeconfig fails as unreadable. Both are the
+    one exporting the per-target kubeconfig, or a Cluster Agent's pinned
+    `--kubeconfig`/`KUBECONFIG` destination, fails as unreadable. Both are the
     failures this module exists to prevent, so the file is staged beside its
     destination and renamed over it.
     """
@@ -701,8 +702,7 @@ def execute(
         # so this is the visible pin `cluster_agent_profile.py` records and the
         # Cluster Agent preflight stats, and nothing more.
         try:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_text(generated, encoding="utf-8")
+            _replace_file(destination, generated)
         except OSError as exc:
             print(f"credential proxy: could not write {destination}: {exc}", file=sys.stderr)
             return 1
