@@ -142,7 +142,7 @@ When `install.sh` or `upgrade.sh` executes from an unversioned directory outside
 
 (or `✓ Verified upgrade sources match official release bundle <VERSION>.` during upgrades). If the marker, or the version stamped into the tree's own root scripts, names a different release, `upgrade.sh` refuses; `install.sh` does not yet make that check.
 
-2. If `.release-bundle` is absent, both scripts accept a matching `BAKED_RELEASE_VERSION` stamped into the script and report matching the baked release. With no stamp, `install.sh` refuses unless `--allow-unverified-source` is passed, and `upgrade.sh` refuses (a `--dry-run` preview warns and continues).
+2. If `.release-bundle` is absent, both scripts accept a matching `BAKED_RELEASE_VERSION` stamped into the script and report matching the baked release. With no stamp, `install.sh` refuses unless `--allow-unverified-source` is passed and `upgrade.sh` refuses; under `--dry-run` both warn and continue.
 
 ### Verifying release bundle integrity and provenance
 

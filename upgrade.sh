@@ -1039,13 +1039,13 @@ acquire_upgrade_sources() {
   # $1 or $2 would be the one printf -v writes to, and the caller would read
   # back an empty string.
   local resolved_dir="" found_checkout="" script_dir="" script_path="${BASH_SOURCE[0]:-}"
-  # Under `curl … | bash` there is no script file on disk, so
-  # `${BASH_SOURCE[0]:-}` expands to `""`, which `dirname ""` turns into `.` and
-  # `pwd` into the directory the operator is standing in — so calling `dirname`
-  # without checking `[ -n "$script_path" ] && [ -f "$script_path" ]` would hand
-  # a piped run whatever directory it was invoked from, skipping the checkout
-  # arms below. Requiring a non-empty path that names an existing file rejects
-  # both the empty expansion on a pipe and any non-file `$0` fallback.
+  # Under `curl … | bash` there is no script file on disk. At the top level
+  # `${BASH_SOURCE[0]:-}` is empty there, but inside a function — which is where
+  # this runs — bash reports `$0` instead, i.e. the literal `bash`. Neither names
+  # this script: `dirname` turns both into `.`, and `pwd` into the directory the
+  # operator is standing in, which would skip the checkout arms below. Requiring
+  # a non-empty path that names an existing file rejects the empty expansion and
+  # the `$0` fallback alike.
   if [ -n "$script_path" ] && [ -f "$script_path" ]; then
     script_dir="$(cd "$(dirname "$script_path")" 2>/dev/null && pwd || echo "")"
   fi
@@ -1077,7 +1077,7 @@ acquire_upgrade_sources() {
     if [ -n "${HOME:-}" ]; then
       clone_dir="$(kube_agents_clone_dir)"
     fi
-    if [ -f "$(pwd)/scripts/installer/installer_common.sh" ] && checkout_owns_run_config "$(pwd)"; then
+    if [ -f "$(pwd)/${KUBE_AGENTS_INSTALLER_COMMON_MARKER}" ] && checkout_owns_run_config "$(pwd)"; then
       found_checkout="$(pwd)"
     elif [ -n "$clone_dir" ] && is_kube_agents_clone "$clone_dir" && checkout_owns_run_config "$clone_dir"; then
       found_checkout="$clone_dir"

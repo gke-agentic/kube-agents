@@ -485,7 +485,19 @@ class UpgradeRunContractTest(unittest.TestCase):
         self.assertIn(snap, source)
         self.assertIn(write, source)
         self.assertLess(source.index(snap), source.index(write))
-        self.assertLess(source.index(write), source.index(dispatch, source.index(write)))
+        # Two `case "$PARAM_UPGRADE_MODE"` blocks: parse-time validation, then
+        # the dispatch into the mode arms. The write has to come before the
+        # second so every mode regenerates. Searching for the dispatch from the
+        # write's own index, as this used to, finds a later match by
+        # construction and could never fail.
+        self.assertEqual(source.count(dispatch), 2, "expected the validation case and the mode dispatch")
+        mode_dispatch = source.rindex(dispatch)
+        self.assertNotIn(
+            "Unsupported upgrade mode",
+            source[mode_dispatch:mode_dispatch + 400],
+            "the last mode case is the validation block, not the dispatch",
+        )
+        self.assertLess(source.index(write), mode_dispatch)
 
 
 class DirtyCheckoutRefusalTest(unittest.TestCase):
@@ -1697,9 +1709,10 @@ exit {exit_code}
 
         The distinction this makes against _acquire_from_outside is the point:
         there the script is a file, so BASH_SOURCE[0] names it. Under
-        `curl … | bash` there is no file, and bash leaves BASH_SOURCE[0] unset
-        or empty when executing from stdin (or non-existent if a caller passes a
-        synthetic name). Sourcing a copy from disk therefore cannot reach the
+        `curl … | bash` there is no file: BASH_SOURCE[0] is empty at the top
+        level, and inside a function, where acquire_upgrade_sources reads it,
+        bash reports `$0` (the literal `bash`) — a value that names no file of
+        this script's. Sourcing a copy from disk therefore cannot reach the
         arms a real pipe takes.
         """
         preview_line = f'{preview_flag}="true"' if preview_flag else ":"
