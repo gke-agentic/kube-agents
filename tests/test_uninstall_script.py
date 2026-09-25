@@ -830,6 +830,43 @@ class SourceRefDispatchTest(unittest.TestCase):
             ],
         )
 
+    def test_source_ref_skips_an_unparseable_home_guess_when_flags_name_the_install(self):
+        """A $HOME guess that is not valid shell must not abort the teardown.
+
+        The load arm exits on a file that fails `bash -n`, which is right for
+        an install.env the operator named. A file found only by searching
+        $HOME, on a run whose three coordinate flags already name the install,
+        is not the operator's to fix before a teardown can proceed: it is
+        dropped, and exactly the flags are forwarded.
+        """
+        proc, log = self._run(
+            ref_carries_uninstall=True,
+            ref_speaks_domain_scoped=True,
+            args=[
+                "--source-ref=v0.3.0",
+                "--non-interactive",
+                "--gcp-project-id=project-b",
+                "--gke-cluster-name=install-b",
+                "--gcp-region=us-west1",
+            ],
+            home_install_env='PROJECT_ID="project-a\nif then\n',
+        )
+        combined = proc.stdout + proc.stderr
+        self.assertEqual(proc.returncode, 0, combined)
+        self.assertIn("Not reading", combined)
+        self.assertIn("it is not valid shell", combined)
+        self.assertNotIn("could not be loaded", combined)
+        self.assertIsNotNone(log, combined)
+        self.assertEqual(
+            log.split(),
+            [
+                "--non-interactive",
+                "--gcp-project-id=project-b",
+                "--gke-cluster-name=install-b",
+                "--gcp-region=us-west1",
+            ],
+        )
+
     def test_source_ref_says_so_when_it_finds_no_install_env(self):
         """The dangerous case the arm used to pass over in silence.
 

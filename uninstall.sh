@@ -499,6 +499,17 @@ main() {
       print_info "Forwarding --gcp-project-id=${PARAM_PROJECT_ID}, --gke-cluster-name=${PARAM_CLUSTER_NAME} and --gcp-region=${PARAM_REGION} to the '${PARAM_SOURCE_REF}' release. Point KUBE_AGENTS_INSTALL_ENV at an install.env to have one read instead."
       handoff_env_file=""
       handoff_env_was_dropped="true"
+    elif [ "$handoff_env_is_a_guess" = "true" ] &&
+      [ -n "$PARAM_PROJECT_ID" ] && [ -n "$PARAM_CLUSTER_NAME" ] && [ -n "$PARAM_REGION" ] &&
+      [ -f "$handoff_env_file" ] && ! bash -n "$handoff_env_file" 2>/dev/null; then
+      # A guess nobody named must not abort a teardown the flags fully describe:
+      # the load arm below exits on a file that is not valid shell, which is
+      # right for a file the operator pointed at and wrong for one found by
+      # searching $HOME.
+      print_warning "Not reading ${handoff_env_file}: it is not valid shell, it was found by searching \$HOME rather than named, and the flags already say which install to tear down."
+      print_info "Forwarding --gcp-project-id=${PARAM_PROJECT_ID}, --gke-cluster-name=${PARAM_CLUSTER_NAME} and --gcp-region=${PARAM_REGION} to the '${PARAM_SOURCE_REF}' release. Point KUBE_AGENTS_INSTALL_ENV at an install.env to have one read instead."
+      handoff_env_file=""
+      handoff_env_was_dropped="true"
     fi
 
     unset PROJECT_ID CLUSTER_NAME REGION NAMESPACE
