@@ -1414,6 +1414,83 @@ class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
             self.assertIn("records a different install than the flags name", combined)
             self.assertIn("--gke-cluster-name=install-b, but CLUSTER_NAME=install-a", combined)
 
+    def test_a_fully_named_piped_teardown_skips_a_home_file_it_only_guessed_at(self):
+        """The local arm's half of the rule the --source-ref arm applies.
+
+        The piped one-liner with all three flags, on a workstation whose
+        $HOME/kube-agents/install.env belongs to another install, used to load
+        it and then refuse: "Refusing to tear down: … records a different
+        install". Every way out that refusal names is closed — the install
+        being torn down has no install.env here, and dropping the flags aims
+        the run at the other install. A file that could not be loaded aborted
+        the run instead. Each shape is now skipped with its reason, and the
+        run goes on to the flags.
+        """
+        flags = ("--gcp-project-id=project-b", "--gke-cluster-name=install-b", "--gcp-region=us-west1")
+        cases = (
+            (
+                "differs",
+                'PROJECT_ID="project-a"\nCLUSTER_NAME="install-a"\nREGION="us-east1"\nNAMESPACE="install-a-ns"\n',
+                "it records a different install",
+            ),
+            (
+                "incomplete",
+                'CLUSTER_NAME="install-b"\nREGION="us-west1"\nNAMESPACE="install-a-ns"\n',
+                "does not record all of PROJECT_ID, CLUSTER_NAME and REGION",
+            ),
+            (
+                "unreadable",
+                'PROJECT_ID="project-b"\nCLUSTER_NAME="install-b"\nREGION="us-west1"\n'
+                "GITOPS_TOKEN=$KUBE_AGENTS_TEST_NEVER_SET\n",
+                "it failed while being read",
+            ),
+            ("not valid shell", 'PROJECT_ID="project-a\nif then\n', "it is not valid shell"),
+        )
+        for label, home_env, reason in cases:
+            for dry_run in (False, True):
+                with self.subTest(file=label, dry_run=dry_run), tempfile.TemporaryDirectory() as tmp:
+                    home = pathlib.Path(tmp) / "home"
+                    (home / "kube-agents").mkdir(parents=True)
+                    (home / "kube-agents" / "install.env").write_text(home_env)
+
+                    proc = self._preview(tmp, home, dry_run=dry_run, args=flags)
+
+                    combined = proc.stdout + proc.stderr
+                    self.assertIn("Not reading", combined)
+                    self.assertIn(reason, combined)
+                    self.assertIn("Tearing down on --gcp-project-id=project-b", combined)
+                    self.assertNotIn("Loaded install configuration from", combined)
+                    self.assertNotIn("Refusing to tear down", combined)
+                    self.assertNotIn("was written for another install", combined)
+                    self.assertNotIn("could not be loaded", combined)
+                    self.assertNotIn("unbound variable", combined)
+                    if dry_run:
+                        self.assertEqual(proc.returncode, 0, combined)
+                        self.assertIn("Dry-Run Uninstall Preview", combined)
+                        self.assertIn("install-b in project-b (us-west1)", combined)
+
+    def test_a_fully_named_piped_teardown_still_reads_a_home_file_that_confirms_it(self):
+        """The skip is for guesses the flags do not confirm, not for every
+        $HOME file: one recording the same three coordinates is still read, so
+        its NAMESPACE and state settings travel with the teardown."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp) / "home"
+            (home / "kube-agents").mkdir(parents=True)
+            (home / "kube-agents" / "install.env").write_text(
+                'PROJECT_ID="project-b"\nCLUSTER_NAME="install-b"\nREGION="us-west1"\n'
+            )
+
+            proc = self._preview(
+                tmp,
+                home,
+                args=("--gcp-project-id=project-b", "--gke-cluster-name=install-b", "--gcp-region=us-west1"),
+            )
+
+            combined = proc.stdout + proc.stderr
+            self.assertEqual(proc.returncode, 0, combined)
+            self.assertIn(f"Loaded install configuration from: {home}/kube-agents/install.env", combined)
+            self.assertNotIn("Not reading", combined)
+
     def test_a_dry_run_over_another_installs_configuration_warns_and_goes_on(self):
         """A --dry-run preview reports the disagreement and continues, matching
         upgrade.sh's preview split."""

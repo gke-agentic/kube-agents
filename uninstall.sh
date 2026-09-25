@@ -369,7 +369,7 @@ resolve_uninstall_env_file() {
 # file's own output is discarded so only the verdict reaches stdout; a failure
 # while sourcing ends the subshell with no verdict, which is what "unreadable"
 # stands for, and the warning the caller prints names it.
-handoff_env_verdict() {
+guessed_env_verdict() {
   local env_file="$1" verdict=""
   verdict="$(
     unset PROJECT_ID CLUSTER_NAME REGION NAMESPACE
@@ -388,6 +388,42 @@ handoff_env_verdict() {
     fi
   )" || verdict=""
   printf '%s\n' "${verdict:-unreadable}"
+}
+
+# Whether resolve_uninstall_env_file reached env_file only through its
+# last-resort step, ${install_checkout}/install.env: a file nobody named, found
+# by searching $HOME, rather than one reached through KUBE_AGENTS_INSTALL_ENV,
+# the checkout or the working directory. On a workstation holding a current
+# install it belongs to THAT install, whichever one the flags name. Shared by
+# the local and --source-ref arms so both judge provenance the same way.
+env_file_is_a_home_guess() {
+  local env_file="$1" candidate_repo_dir="$2" install_checkout="$3"
+  [ -z "${KUBE_AGENTS_INSTALL_ENV:-}" ] &&
+    { [ -z "$candidate_repo_dir" ] || [ ! -f "${candidate_repo_dir}/install.env" ]; } &&
+    [ ! -f "$(pwd)/install.env" ] &&
+    [ -n "$install_checkout" ] &&
+    [ "$env_file" = "${install_checkout}/install.env" ] &&
+    [ -f "$env_file" ]
+}
+
+# Why a $HOME guess must not be read on a run whose three coordinate flags are
+# all set, as a clause for the "Not reading" warning; nothing when it confirms
+# them. A guess nobody named must not refuse or abort a teardown the flags fully
+# describe: loading exits on a file that is not valid shell or fails while
+# sourced, and the coordinate check refuses one that disagrees -- right for a
+# file the operator pointed at, wrong for one found by searching $HOME.
+guessed_env_skip_reason() {
+  local env_file="$1"
+  if ! bash -n "$env_file" 2>/dev/null; then
+    echo "it is not valid shell"
+    return 0
+  fi
+  case "$(guessed_env_verdict "$env_file")" in
+    confirms) ;;
+    differs) echo "it records a different install" ;;
+    incomplete) echo "it does not record all of PROJECT_ID, CLUSTER_NAME and REGION, so the flags cannot confirm it belongs to the install being torn down" ;;
+    *) echo "it failed while being read (such as expanding a variable that is not set)" ;;
+  esac
 }
 
 # Compare the command-line coordinates against what install.env itself recorded.
@@ -486,11 +522,7 @@ main() {
     # to need it has no install.env of its own for the lookup to find first.
     local handoff_env_is_a_guess="false"
     local handoff_env_was_dropped="false"
-    if [ -z "${KUBE_AGENTS_INSTALL_ENV:-}" ] &&
-      { [ -z "$wrapper_checkout" ] || [ ! -f "${wrapper_checkout}/install.env" ]; } &&
-      [ ! -f "$(pwd)/install.env" ] &&
-      [ -n "$handoff_install_checkout" ] &&
-      [ "$handoff_env_file" = "${handoff_install_checkout}/install.env" ]; then
+    if env_file_is_a_home_guess "$handoff_env_file" "$wrapper_checkout" "$handoff_install_checkout"; then
       handoff_env_is_a_guess="true"
     fi
     # A $HOME guess is never read unless all three command-line coordinates
@@ -517,22 +549,10 @@ main() {
       print_info "Pass all three of --gcp-project-id, --gke-cluster-name and --gcp-region to name the install to tear down, or point KUBE_AGENTS_INSTALL_ENV at ${handoff_env_file} (or run from ${handoff_install_checkout}) if that file is the one you mean."
       handoff_env_file=""
       handoff_env_was_dropped="true"
-    elif [ "$handoff_env_is_a_guess" = "true" ] && [ -f "$handoff_env_file" ]; then
-      # All three flags are set here. A guess nobody named must not abort a
-      # teardown the flags fully describe: the load arm below exits on a file
-      # that is not valid shell or fails while sourced, which is right for a
-      # file the operator pointed at and wrong for one found by searching $HOME.
-      local handoff_env_skip_reason=""
-      if ! bash -n "$handoff_env_file" 2>/dev/null; then
-        handoff_env_skip_reason="it is not valid shell"
-      else
-        case "$(handoff_env_verdict "$handoff_env_file")" in
-          confirms) ;;
-          differs) handoff_env_skip_reason="it records a different install" ;;
-          incomplete) handoff_env_skip_reason="it does not record all of PROJECT_ID, CLUSTER_NAME and REGION, so the flags cannot confirm it belongs to the install being torn down" ;;
-          *) handoff_env_skip_reason="it failed while being read (such as expanding a variable that is not set)" ;;
-        esac
-      fi
+    elif [ "$handoff_env_is_a_guess" = "true" ]; then
+      # All three flags are set here.
+      local handoff_env_skip_reason
+      handoff_env_skip_reason="$(guessed_env_skip_reason "$handoff_env_file")"
       if [ -n "$handoff_env_skip_reason" ]; then
         print_warning "Not reading ${handoff_env_file}: ${handoff_env_skip_reason}, it was found by searching \$HOME rather than named, and the flags already say which install to tear down."
         print_info "Forwarding --gcp-project-id=${PARAM_PROJECT_ID}, --gke-cluster-name=${PARAM_CLUSTER_NAME} and --gcp-region=${PARAM_REGION} to the '${PARAM_SOURCE_REF}' release. Point KUBE_AGENTS_INSTALL_ENV at an install.env to have one read instead."
@@ -697,6 +717,24 @@ main() {
   fi
   local install_env_file
   install_env_file="$(resolve_uninstall_env_file "$repo_dir" "$install_checkout")"
+  # The same rule the --source-ref arm applies. With all three coordinates on
+  # the command line, a file found only by searching $HOME is read only when it
+  # records and matches all three; otherwise it would refuse on the coordinate
+  # check (or abort while loading) a teardown the flags fully name, and every
+  # way out that refusal offers is closed: the install being torn down has no
+  # install.env here to point at or run from, and dropping the flags aims the
+  # run at the other install. With fewer flags it is still loaded and still
+  # checked, since it supplies the coordinates the flags left out.
+  if [ -n "$PARAM_PROJECT_ID" ] && [ -n "$PARAM_CLUSTER_NAME" ] && [ -n "$PARAM_REGION" ] &&
+    env_file_is_a_home_guess "$install_env_file" "$repo_dir" "$install_checkout"; then
+    local install_env_skip_reason
+    install_env_skip_reason="$(guessed_env_skip_reason "$install_env_file")"
+    if [ -n "$install_env_skip_reason" ]; then
+      print_warning "Not reading ${install_env_file}: ${install_env_skip_reason}, it was found by searching \$HOME rather than named, and the flags already say which install to tear down."
+      print_info "Tearing down on --gcp-project-id=${PARAM_PROJECT_ID}, --gke-cluster-name=${PARAM_CLUSTER_NAME} and --gcp-region=${PARAM_REGION}. Point KUBE_AGENTS_INSTALL_ENV at an install.env to have one read instead."
+      install_env_file=""
+    fi
+  fi
   local state_loaded="false"
   # Clear any shell-exported coordinates before sourcing the file: load_install_env
   # only unsets NAMESPACE, so without this an exported REGION or PROJECT_ID in
