@@ -196,7 +196,7 @@ class InstallEnvDiscovery(unittest.TestCase):
 
 
 class VariableReferences(unittest.TestCase):
-    """The front doors source these files, so `${VAR}` resolves in them.
+    """The front doors source install.env, so `${VAR}` resolves in it.
 
     Reading it literally instead is the guard's own failure mode: the context
     becomes `gke_acme-prod_us-central1_${PROJECT_ID}-cluster`, which matches no

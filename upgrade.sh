@@ -773,9 +773,11 @@ verify_local_source_ref() {
     # Both previews warn, the way verify_local_source_clean's do and for the
     # same reason: they change nothing, and a preview of what the working tree
     # WOULD apply is the one command that answers "what have I edited here".
-    # --plan reaches this only since previews started reusing an install
-    # checkout that is already at the ref; refusing there would take the drift
-    # report away from an operator whose checkout carries a stray edit.
+    # Every tagged --plan reaches this, whichever checkout it runs from: the
+    # script's own, the working directory, or an install checkout reused
+    # because it is already at the ref. It used to refuse here, which took the
+    # drift report away from an operator whose checkout carries a stray edit;
+    # it now warns in all three, as --dry-run always did.
     if [ "$PARAM_DRY_RUN" = "true" ] || [ "$PARAM_PLAN" = "true" ]; then
       print_warning "This preview is using uncommitted source changes; a real upgrade would require a clean checkout."
     else
@@ -1052,16 +1054,18 @@ acquire_upgrade_sources() {
   # back an empty string.
   local resolved_dir="" found_checkout="" script_dir="" script_path="${BASH_SOURCE[0]:-}"
   # Under `curl … | bash` there is no script file on disk. At the top level
-  # `${BASH_SOURCE[0]:-}` is empty there, but inside a function — which is where
-  # this runs — bash reports `$0` instead: `bash` for the documented one-liner,
-  # or the interpreter's own path (`/bin/bash`) when it is invoked by path.
-  # Neither names this script. An unguarded `dirname` turns the empty value and
-  # a bare `bash` into `.`, and `pwd` into the directory the operator is
-  # standing in, which would skip the checkout arms below. Two checks share the
-  # job: requiring a non-empty path that names an existing file rejects the
-  # empty value and a bare `bash` (short of a file by that name in the working
-  # directory), and the installer-helper marker check that follows rejects the
-  # interpreter's directory, which carries no checkout.
+  # `${BASH_SOURCE[0]:-}` is empty there; inside a function — which is where
+  # this runs — what bash reports depends on its version: `main` or nothing on
+  # the releases on_error's comment above describes, and `$0` on bash 5.3
+  # (measured): `bash` for the documented one-liner, or the interpreter's own
+  # path (`/bin/bash`) when it is invoked by path. None of them names this
+  # script. An unguarded `dirname` turns the empty value, `main` and a bare
+  # `bash` into `.`, and `pwd` into the directory the operator is standing in,
+  # which would skip the checkout arms below. Two checks share the job:
+  # requiring a non-empty path that names an existing file rejects the empty
+  # value, `main` and a bare `bash` (short of a file by that name in the
+  # working directory), and the installer-helper marker check that follows
+  # rejects the interpreter's directory, which carries no checkout.
   if [ -n "$script_path" ] && [ -f "$script_path" ]; then
     script_dir="$(cd "$(dirname "$script_path")" 2>/dev/null && pwd || echo "")"
   fi

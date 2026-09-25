@@ -177,6 +177,35 @@ echo "rc=$rc bucket=${{KUBE_AGENTS_STATE_BUCKET:-<unset>}}"
         self.assertIn("--source-ref", proc.stdout)
 
 
+def _scratch_repo(tmp):
+    """A minimal kube-agents tree for whole-script runs, with no install.env.
+
+    Running against the real checkout is not hermetic: compose_dir is derived
+    from the script's own directory, and a checkout that has driven a real
+    install carries a gitignored terraform/examples/full-install/
+    backend_override.tf, which sends resolve_state_location down the
+    local-state branch. Green in CI, red on a maintainer's machine.
+
+    Safe to call more than once in one temporary directory: an install.env a
+    previous call's test left in the tree is removed, so every run starts
+    from a checkout that has none of its own.
+    """
+    root = pathlib.Path(tmp) / "repo"
+    (root / "terraform" / "examples" / "full-install").mkdir(parents=True, exist_ok=True)
+    (root / "scripts" / "installer").mkdir(parents=True, exist_ok=True)
+    (root / "install.env").unlink(missing_ok=True)
+    # Only its existence is tested before the exits under test.
+    (root / "terraform" / "examples" / "full-install" / "lifecycle.sh").touch()
+    shutil.copy(_UNINSTALL_SH, root / "uninstall.sh")
+    shutil.copy(_INSTALLER_COMMON, root / "scripts" / "installer" / "installer_common.sh")
+    # installer_common.sh sources the defaults from the repository root and
+    # refuses to run without them, so a fake repo needs the real file. A
+    # checkout genuinely missing it cannot decide anything about an install,
+    # which is why that is a hard failure rather than a fallback.
+    shutil.copy(_INSTALL_DEFAULTS, root / "install.defaults.env")
+    return root
+
+
 class DiagnosticsTest(unittest.TestCase):
     """The two ways this teardown used to fail without saying anything."""
 
@@ -293,36 +322,12 @@ echo "NOT_REACHED"
             self.assertIn(f"Teardown error encountered at {lib}:", proc.stderr)
             self.assertIn(" in helper_probe (exit code 1): false", proc.stderr)
 
-    def _scratch_repo(self, tmp):
-        """A minimal kube-agents tree for whole-script runs.
-
-        Running against the real checkout is not hermetic: compose_dir is
-        derived from the script's own directory, and a checkout that has driven
-        a real install carries a gitignored
-        terraform/examples/full-install/backend_override.tf, which sends
-        resolve_state_location down the local-state branch. Green in CI, red on
-        a maintainer's machine.
-        """
-        root = pathlib.Path(tmp) / "repo"
-        (root / "terraform" / "examples" / "full-install").mkdir(parents=True)
-        (root / "scripts" / "installer").mkdir(parents=True)
-        # Only its existence is tested before the exits under test.
-        (root / "terraform" / "examples" / "full-install" / "lifecycle.sh").touch()
-        shutil.copy(_UNINSTALL_SH, root / "uninstall.sh")
-        shutil.copy(_INSTALLER_COMMON, root / "scripts" / "installer" / "installer_common.sh")
-        # installer_common.sh sources the defaults from the repository root and
-        # refuses to run without them, so a fake repo needs the real file. A
-        # checkout genuinely missing it cannot decide anything about an install,
-        # which is why that is a hard failure rather than a fallback.
-        shutil.copy(_INSTALL_DEFAULTS, root / "install.defaults.env")
-        return root
-
     def _run_whole_script(self, tmp, gcloud_body):
         bin_dir = create_minimal_tools_bin(tmp)
         gcloud = bin_dir / "gcloud"
         gcloud.write_text(gcloud_body)
         gcloud.chmod(gcloud.stat().st_mode | stat.S_IEXEC)
-        root = self._scratch_repo(tmp)
+        root = _scratch_repo(tmp)
         return subprocess.run(
             ["bash", str(root / "uninstall.sh"), "--non-interactive", "-y",
              "--gcp-project-id=p1", "--gke-cluster-name=c1", "--gcp-region=r1"],
@@ -1160,18 +1165,6 @@ class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
     to be located, so the install checkout is now the only one left.
     """
 
-    def _scratch_repo(self, tmp):
-        """A checkout with the engine markers, but no install.env of its own."""
-        root = pathlib.Path(tmp) / "repo"
-        (root / "terraform" / "examples" / "full-install").mkdir(parents=True, exist_ok=True)
-        (root / "scripts" / "installer").mkdir(parents=True, exist_ok=True)
-        (root / "install.env").unlink(missing_ok=True)
-        (root / "terraform" / "examples" / "full-install" / "lifecycle.sh").touch()
-        shutil.copy(_UNINSTALL_SH, root / "uninstall.sh")
-        shutil.copy(_INSTALLER_COMMON, root / "scripts" / "installer" / "installer_common.sh")
-        shutil.copy(_INSTALL_DEFAULTS, root / "install.defaults.env")
-        return root
-
     def _preview(
         self,
         tmp,
@@ -1215,7 +1208,7 @@ class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
         (neutral / "install.env").unlink(missing_ok=True)
         if cwd_install_env is not None:
             (neutral / "install.env").write_text(cwd_install_env)
-        root = self._scratch_repo(tmp)
+        root = _scratch_repo(tmp)
         if repo_install_env is not None:
             (root / "install.env").write_text(repo_install_env)
         if from_checkout:
