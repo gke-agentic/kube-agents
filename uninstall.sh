@@ -558,9 +558,13 @@ main() {
     [ -n "$eff_cluster_name" ] || unforwarded="${unforwarded:+${unforwarded}, }--gke-cluster-name"
     [ -n "$eff_region" ] || unforwarded="${unforwarded:+${unforwarded}, }--gcp-region"
     if [ -z "$eff_project_id" ] && [ -z "$eff_cluster_name" ] && [ -z "$eff_region" ]; then
-      print_warning "No coordinates are being forwarded either, so the '${PARAM_SOURCE_REF}' release will aim at its own defaults and gcloud's active project."
+      print_warning "No coordinates are being forwarded, so the '${PARAM_SOURCE_REF}' release will aim at its own defaults and gcloud's active project."
     elif [ -n "$unforwarded" ]; then
-      print_warning "Not forwarding ${unforwarded} to the '${PARAM_SOURCE_REF}' release: neither the command line nor a loaded install.env gives a value, so that release will fall back to its own default (gcloud's active project, for the project)."
+      local project_fallback=""
+      if [ -z "$eff_project_id" ]; then
+        project_fallback=" (gcloud's active project, for the project)"
+      fi
+      print_warning "Not forwarding ${unforwarded} to the '${PARAM_SOURCE_REF}' release: neither the command line nor a loaded install.env gives a value, so that release will fall back to its own default${project_fallback}."
     fi
     # The dropped-guess arm above already named its own remedy, pointing at the
     # file it did not read.

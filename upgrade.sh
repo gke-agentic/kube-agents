@@ -1041,11 +1041,15 @@ acquire_upgrade_sources() {
   local resolved_dir="" found_checkout="" script_dir="" script_path="${BASH_SOURCE[0]:-}"
   # Under `curl … | bash` there is no script file on disk. At the top level
   # `${BASH_SOURCE[0]:-}` is empty there, but inside a function — which is where
-  # this runs — bash reports `$0` instead, i.e. the literal `bash`. Neither names
-  # this script: `dirname` turns both into `.`, and `pwd` into the directory the
-  # operator is standing in, which would skip the checkout arms below. Requiring
-  # a non-empty path that names an existing file rejects the empty expansion and
-  # the `$0` fallback alike.
+  # this runs — bash reports `$0` instead: `bash` for the documented one-liner,
+  # or the interpreter's own path (`/bin/bash`) when it is invoked by path.
+  # Neither names this script. An unguarded `dirname` turns the empty value and
+  # a bare `bash` into `.`, and `pwd` into the directory the operator is
+  # standing in, which would skip the checkout arms below. Two checks share the
+  # job: requiring a non-empty path that names an existing file rejects the
+  # empty value and a bare `bash` (short of a file by that name in the working
+  # directory), and the installer-helper marker check that follows rejects the
+  # interpreter's directory, which carries no checkout.
   if [ -n "$script_path" ] && [ -f "$script_path" ]; then
     script_dir="$(cd "$(dirname "$script_path")" 2>/dev/null && pwd || echo "")"
   fi

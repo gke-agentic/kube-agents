@@ -1711,9 +1711,9 @@ exit {exit_code}
         there the script is a file, so BASH_SOURCE[0] names it. Under
         `curl … | bash` there is no file: BASH_SOURCE[0] is empty at the top
         level, and inside a function, where acquire_upgrade_sources reads it,
-        bash reports `$0` (the literal `bash`) — a value that names no file of
-        this script's. Sourcing a copy from disk therefore cannot reach the
-        arms a real pipe takes.
+        bash reports `$0` — `bash`, or the interpreter's path when invoked by
+        path — which names no file of this script's. Sourcing a copy from disk
+        therefore cannot reach the arms a real pipe takes.
         """
         preview_line = f'{preview_flag}="true"' if preview_flag else ":"
         piped = "\n".join(

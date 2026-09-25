@@ -619,6 +619,9 @@ class SourceRefDispatchTest(unittest.TestCase):
                     self.assertEqual(proc.returncode, 0, combined)
                     self.assertIn("Loaded install configuration from:", combined)
                     self.assertIn("Not forwarding --gcp-region to the 'v0.3.0' release", combined)
+                    # The project IS forwarded, so the project fallback is not mentioned.
+                    self.assertNotIn("gcloud's active project", combined)
+                    self.assertIn("Pass --gcp-project-id/--gke-cluster-name/--gcp-region, or point KUBE_AGENTS_INSTALL_ENV", combined)
                     self.assertNotIn("--gcp-project-id,", combined)
                     self.assertNotIn("No coordinates are being forwarded", combined)
                     # Still a warning, not a refusal: it hands over with what it has.
@@ -694,7 +697,7 @@ class SourceRefDispatchTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, combined)
         self.assertIn("Not reading", combined)
         self.assertIn("found only by searching $HOME", combined)
-        self.assertIn("No coordinates are being forwarded either", combined)
+        self.assertIn("No coordinates are being forwarded", combined)
         self.assertNotIn("No install configuration (install.env) was found", combined)
         self.assertIsNotNone(log, combined)
         self.assertEqual(log.split(), ["--non-interactive"])
@@ -725,6 +728,10 @@ class SourceRefDispatchTest(unittest.TestCase):
         self.assertIn("found only by searching $HOME", combined)
         self.assertIn("Not forwarding --gke-cluster-name to the 'v0.3.0' release", combined)
         self.assertNotIn("Not forwarding --gcp-project-id", combined)
+        # The dropped-guess arm already named its own remedy (pointing at the
+        # file it did not read); the generic one would repeat it.
+        self.assertIn("if that file is the one you mean", combined)
+        self.assertNotIn("Pass --gcp-project-id/--gke-cluster-name/--gcp-region, or point KUBE_AGENTS_INSTALL_ENV", combined)
         self.assertNotIn("No install configuration (install.env) was found", combined)
         self.assertIsNotNone(log, combined)
         self.assertEqual(
@@ -841,7 +848,7 @@ class SourceRefDispatchTest(unittest.TestCase):
         combined = proc.stdout + proc.stderr
         self.assertEqual(proc.returncode, 0, combined)
         self.assertIn("No install configuration (install.env) was found", combined)
-        self.assertIn("No coordinates are being forwarded either", combined)
+        self.assertIn("No coordinates are being forwarded", combined)
         self.assertIn("will aim at its own defaults", combined)
         # It still hands over — warning, not refusal.
         self.assertIsNotNone(log, combined)
@@ -864,7 +871,7 @@ class SourceRefDispatchTest(unittest.TestCase):
         combined = proc.stdout + proc.stderr
         self.assertEqual(proc.returncode, 0, combined)
         self.assertIn("No install configuration (install.env) was found", combined)
-        self.assertNotIn("No coordinates are being forwarded either", combined)
+        self.assertNotIn("No coordinates are being forwarded", combined)
         self.assertNotIn("Not forwarding", combined)
         self.assertIsNotNone(log, combined)
 

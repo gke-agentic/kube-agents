@@ -2181,10 +2181,15 @@ class HelmReleaseSelfHealingTest(unittest.TestCase):
             '  *) echo "unexpected helm call: $*" >&2; exit 1 ;;\n'
             'esac\n'
         )
-        proc = self._run_helm_test('ensure_clean_helm_release kube-agents kubeagents-system', helm_script)
+        proc = self._run_helm_test(
+            'ensure_clean_helm_release kube-agents kubeagents-system' + self._REPORT_REPAIRED,
+            helm_script,
+        )
         self.assertEqual(proc.returncode, 1, proc.stderr)
         self.assertIn("Automatic uninstall is blocked", proc.stderr)
         self.assertNotIn("UNINSTALL EXECUTED", proc.stderr)
+        # A refusal repaired nothing, and must not claim to have.
+        self.assertIn("REPAIRED=[]", proc.stdout, proc.stderr)
 
     def test_pending_install_uninstalls_when_opted_in(self):
         helm_script = (
