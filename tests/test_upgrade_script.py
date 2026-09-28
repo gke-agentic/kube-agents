@@ -1006,7 +1006,9 @@ class UpgradeReusesTheInstallCheckoutTest(unittest.TestCase):
         """
         temp_dir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(temp_dir.cleanup)
-        base = pathlib.Path(temp_dir.name)
+        # Resolved: the script reports these paths through `pwd`, and on macOS
+        # the temporary directory is /var/... symlinked to /private/var/...
+        base = pathlib.Path(temp_dir.name).resolve()
         work_dir = base / "work"
         bare_dir = base / "upstream.git"
         home_dir = base / "home"
@@ -2359,7 +2361,9 @@ resolve_install_env_file "{repo_dir}" "{install_checkout}"
         """A run's own sources, the operator's working directory, and the install checkout."""
         temp_dir = tempfile.TemporaryDirectory(prefix="install-env-order-")
         self.addCleanup(temp_dir.cleanup)
-        base = pathlib.Path(temp_dir.name)
+        # Resolved, as in _existing_clone_fixture: the working-directory arm
+        # reports "$(pwd)/install.env", the physical path.
+        base = pathlib.Path(temp_dir.name).resolve()
         for name in ("sources", "cwd", "checkout", "home"):
             (base / name).mkdir()
         (base / "home" / "kube-agents").mkdir()
