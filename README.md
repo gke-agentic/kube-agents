@@ -66,7 +66,7 @@ and credential with me. Run install.sh with --dry-run and show me its printed su
 Only run the real install after I say yes.
 ```
 
-The full procedure behind the prompt, including the credential and consent-flag checks, is in [INSTALL.md](INSTALL.md#ai-assisted-installation).
+The full procedure behind the prompt, including the credential and consent-flag checks, is in [INSTALL.md](INSTALL.md#ai-assisted-installation). An assistant working in a checkout of this repository also picks up the [`install-kube-agents`](.agents/skills/install-kube-agents/SKILL.md) skill, which covers the same install.
 
 Prefer to drive the engine by hand? Unpack `kube-agents-<RELEASE_VERSION>.tar.gz` from [GitHub Releases](https://github.com/gke-labs/kube-agents/releases) (recommended), or clone the repository at an official release tag if a Git checkout is needed:
 

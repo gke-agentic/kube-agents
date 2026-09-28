@@ -186,6 +186,10 @@ and credential with me. Run install.sh with --dry-run and show me its printed su
 Only run the real install after I say yes.
 ```
 
+An assistant working in a checkout of this repository also picks up the
+[`install-kube-agents`](.agents/skills/install-kube-agents/SKILL.md) skill from `.agents/skills/`
+(`.claude/skills/` links to it), which covers the same install; the steps below apply either way.
+
 An agent given that prompt, or reading this file on its own, follows these steps:
 
 1. Resolve the latest stable release tag from
