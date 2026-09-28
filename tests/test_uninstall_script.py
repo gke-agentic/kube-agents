@@ -1411,6 +1411,43 @@ class TeardownKnowsWhichInstallItIsAimedAtTest(unittest.TestCase):
             self.assertEqual(proc.returncode, 1, combined)
             self.assertIn("records a different install than the flags name", combined)
             self.assertIn("--gke-cluster-name=install-b, but CLUSTER_NAME=install-a", combined)
+            # The file was only a $HOME guess, so the usual ways out may all be
+            # closed for install-b; the refusal has to name the one that works.
+            self.assertIn(
+                "give all three of --gcp-project-id, --gke-cluster-name and --gcp-region instead",
+                combined,
+            )
+
+    def test_a_refusal_over_a_named_configuration_does_not_offer_the_three_flag_route(self):
+        """The three-flag remedy is for a file found by searching $HOME only.
+
+        A file the operator named -- through KUBE_AGENTS_INSTALL_ENV or by
+        standing in its directory -- is read whatever the flags say, so all
+        three flags would still refuse, and offering that way out would send
+        the operator to a second refusal.
+        """
+        conflicting = 'PROJECT_ID="my-gcp-project"\nCLUSTER_NAME="install-a"\nREGION="us-central1"\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp) / "home"
+            (home / "kube-agents").mkdir(parents=True)
+            explicit_file = pathlib.Path(tmp) / "named.env"
+            explicit_file.write_text(conflicting)
+            for label, kw in (
+                ("KUBE_AGENTS_INSTALL_ENV", {"explicit_install_env": explicit_file}),
+                ("working directory", {"cwd_install_env": conflicting}),
+            ):
+                with self.subTest(source=label):
+                    proc = self._preview(
+                        tmp,
+                        home,
+                        dry_run=False,
+                        args=("--gke-cluster-name=install-b",),
+                        **kw,
+                    )
+                    combined = proc.stdout + proc.stderr
+                    self.assertEqual(proc.returncode, 1, combined)
+                    self.assertIn("records a different install than the flags name", combined)
+                    self.assertNotIn("give all three of --gcp-project-id", combined)
 
     def test_a_fully_named_piped_teardown_skips_a_home_file_it_only_guessed_at(self):
         """The local arm's half of the rule the --source-ref arm applies.

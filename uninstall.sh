@@ -433,8 +433,16 @@ guessed_env_skip_reason() {
 # custom KUBE_AGENTS_STATE_BUCKET / KUBE_AGENTS_STATE_PREFIX keys -- stays in
 # the environment and steers the state lookup and terraform.tfvars generation
 # for install B. Same split as upgrade.sh: a real run refuses, a dry-run warns.
+#
+# The optional second argument says the file was only found by searching $HOME
+# (env_file_is_a_home_guess). Then the install being torn down may have no
+# install.env at all, and the refusal's usual ways out are closed: nothing to
+# point KUBE_AGENTS_INSTALL_ENV at or run from, and dropping the flags aims the
+# run at the other install. The one that works is naming all three
+# coordinates, which makes the local arm skip the guess, so it is said too.
 check_uninstall_coordinate_conflicts() {
   local env_file="$1"
+  local env_is_a_home_guess="${2:-false}"
   local coordinate_conflicts=""
   if [ -n "$PARAM_PROJECT_ID" ] && [ -n "${PROJECT_ID:-}" ] && [ "$PARAM_PROJECT_ID" != "$PROJECT_ID" ]; then
     coordinate_conflicts="${coordinate_conflicts}    --gcp-project-id=${PARAM_PROJECT_ID}, but PROJECT_ID=${PROJECT_ID}"$'\n'
@@ -453,6 +461,9 @@ check_uninstall_coordinate_conflicts() {
       print_error "Refusing to tear down: ${env_file} records a different install than the flags name."
       printf '%s' "$coordinate_conflicts" >&2
       print_info "Teardown resolves its Terraform state backend and regenerates terraform.tfvars from that file, so this would read one install's configuration while tearing down another. Point KUBE_AGENTS_INSTALL_ENV at the install.env of the install you are tearing down, run from its checkout, or drop the flags that disagree with it."
+      if [ "$env_is_a_home_guess" = "true" ]; then
+        print_info "If the install you are tearing down has no install.env of its own, give all three of --gcp-project-id, --gke-cluster-name and --gcp-region instead: ${env_file} was only found by searching \$HOME, and a teardown the flags fully name does not read a file like that unless it records the same install."
+      fi
       exit 1
     fi
   fi
@@ -785,7 +796,11 @@ main() {
   print_info "GCP Target Project: ${C_BOLD}${target_project}${C_RESET}"
   print_info "GKE Target Cluster: ${C_BOLD}${target_cluster}${C_RESET} (${target_region})"
   if [ "$state_loaded" = "true" ]; then
-    check_uninstall_coordinate_conflicts "$install_env_file"
+    local install_env_is_a_home_guess="false"
+    if env_file_is_a_home_guess "$install_env_file" "$repo_dir" "$install_checkout"; then
+      install_env_is_a_home_guess="true"
+    fi
+    check_uninstall_coordinate_conflicts "$install_env_file" "$install_env_is_a_home_guess"
   fi
   if [ -n "$guessed_coordinates" ]; then
     if [ "$state_loaded" = "true" ]; then
