@@ -66,11 +66,12 @@ To preview the upgrade plan and output a JSON status report without modifying cl
 
 Machine-readable JSON status reports are generated at `/tmp/kube-agents-upgrade-report.json`.
 
-A release-pinned copy of `upgrade.sh` needs nothing more. An unstamped checkout (a `git clone`)
-carries no baked release version and asks for the tag on the terminal, so without one — the way an
-agent runs it — it exits 1 with `--image-tag is required`. Add `--image-tag=<RELEASE_TAG>`
-(a validated release tag or full commit SHA), or `--keep-image-tag` to preview everything except
-the images.
+A release-pinned copy of `upgrade.sh` needs nothing more, and neither does a checkout cloned at a
+release tag: release tags sit on commits stamped with the version, so it is a release copy too. A
+checkout with no baked release version (a clone of `main` or of a branch) asks for the tag on the
+terminal, so without one — the way an agent runs it — it exits 1 with `--image-tag is required`.
+Add `--image-tag=<RELEASE_TAG>` (a validated release tag or full commit SHA), or `--keep-image-tag`
+to preview everything except the images.
 
 ## Targeting a Revision Other Than the Script's Own
 
