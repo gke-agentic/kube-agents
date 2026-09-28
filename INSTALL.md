@@ -202,6 +202,7 @@ Before beginning installation, ensure your environment meets the requirements fo
 | **`jq`**                        | `1.6+`                                          | `jq --version`                     | JSON parsing utility used by `install.sh` and deploy scripts to read `images.json`, and by `upgrade.sh` to read the release's values and confirm the images it re-tagged.                                              | **All Methods**                                  |
 | **GitHub CLI (`gh`)**           | `2.0+`                                          | `gh --version`                     | GitOps repository discovery, token management, and PR automation.                                                                                                                                                      | **Methods 0 & 1**                                |
 | **`git`**                       | `2.20+`                                         | `git --version`                    | Clones configuration templates and resolves release tags.                                                                                                                                                              | **All Methods**                                  |
+| **`python3`**                   | `3.x`                                           | `python3 --version`                | The installer's state readers and its pre-apply scope check compare JSON with it.                                                                                                                                      | **Methods 0 & 1**                                |
 | **Kubernetes Cluster**          | `1.29+` (`1.35+` for `AgentPlugin` OCI volumes) | `kubectl version`                  | Target Kubernetes or GKE cluster (`AgentPlugin` OCI volumes require K8s 1.35+ `ImageVolume` gate).                                                                                                                     | **All Methods**                                  |
 | **`gcloud beta` component**     | Standard                                        | `gcloud beta --help`               | Required when adopting an existing unencrypted cluster for CMEK (`gcloud beta services identity create`) or purging backup plans during teardown (`gcloud beta container backup-restore`).                             | **Optional (CMEK / Backup Plan lifecycle)**      |
 | **gettext (`envsubst`)**        | Standard                                        | `envsubst --version`               | Template substitution in development Kustomize deployment targets (`make -C k8s-operator deploy-*`).                                                                                                                   | **Method 2 only**                                |
@@ -800,7 +801,17 @@ kubectl get platformagents -A
 
 ## Method 3: Local Development & Fast Iteration
 
-For developer testing on a workstation against a local cluster (e.g., Kind) or fast remote iteration against a GKE cluster:
+### kind
+
+`hack/kind-up.sh` builds the images from the checkout, creates a kind cluster, installs the chart
+with LiteLLM routed to the Gemini API (`GEMINI_API_KEY`), and prints the command that runs a bench
+case against it. It sets `harness.location: kind` on the `PlatformAgent`, which the operator reads
+as "no GKE cluster": the credential proxy uses the cluster it runs in and no `GKE_*` variables are
+set. Most of the evals depend on GKE or GCP and cannot run there. `--delete` removes the cluster.
+
+### The operator against a cluster you already have
+
+For fast iteration on the operator itself, against a GKE cluster or the kind cluster above:
 
 1. **Set your active Kubernetes context**:
    ```bash
