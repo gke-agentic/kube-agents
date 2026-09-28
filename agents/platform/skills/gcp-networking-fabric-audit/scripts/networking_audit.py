@@ -192,7 +192,7 @@ def main():
     active_targets = []
 
     for error in listing_errors:
-        sys.stderr.write(f"{error}; scope fell back to {target_projects or 'no project'}\n")
+        sys.stderr.write(f"{error}; auditing {target_projects or 'no project'}\n")
         skipped_targets.append({
             "cluster": f"{PROJECT_TARGET_PREFIX}{UNENUMERATED_PROJECTS}",
             "name": f"{PROJECT_TARGET_PREFIX}{UNENUMERATED_PROJECTS}",

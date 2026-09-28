@@ -9,10 +9,15 @@ A single `kube-agents` installation in one host project can manage GKE clusters,
 workloads, and GCP infrastructure across any number of separate GCP projects —
 whether or not those projects belong to a shared GKE Hub fleet.
 
-The installer binds the agent's Google Service Account in the host project
-alone. Giving the agent access to another project requires only **granting the
-service account read-only IAM roles** on that project and ensuring its GCP APIs
-are enabled.
+What the agent needs in another project is **read-only IAM roles for its Google
+Service Account** there, and the project's GCP APIs enabled. On an install made
+with `install.sh`, list the project in `SCOPE_PROJECTS` in `install.env`: the
+installer then binds the read roles in that project and declares it in
+`spec.scope`, so Terraform owns the bindings and revokes them when the project is
+removed (see [Installer-managed installs](#installer-managed-installs)). Without
+`SCOPE_PROJECTS` the installer binds the service account in the host project
+alone, and the grants in other projects are yours to make by hand, as the
+steps below describe.
 
 Once IAM access is granted, the two layers of the harness discover projects
 differently:
@@ -35,9 +40,33 @@ differently:
   project. For clusters in another project to get dedicated
   [Cluster Agent](/kube-agents/concepts/cluster-agents/) profiles (`cluster-*`),
   appear on the Planning Agent's specialist roster, and have their Kubernetes
-  warning events watched by `k8s-event-watcher`, you either add the project ID
-  to [`spec.scope.projects`](/kube-agents/operator/platformagent-crd/#specscope)
+  warning events watched by `k8s-event-watcher`, you either declare the project
+  in [`spec.scope.projects`](/kube-agents/operator/platformagent-crd/#specscope)
   or ask the agent in chat to onboard specific clusters (`manage-cluster`).
+
+## Installer-managed installs
+
+On an install made with `install.sh`, `spec.scope` is declared in `install.env`
+and never by editing the `PlatformAgent`: a full upgrade refuses to apply over a
+`spec.scope` edited by hand until `install.env` records it. Add the project to
+`SCOPE_PROJECTS` (space- or comma-separated) and run a full upgrade:
+
+```bash
+# install.env
+SCOPE_PROJECTS=<OTHER_PROJECT_ID>
+```
+
+```bash
+./upgrade.sh --upgrade-mode=full
+```
+
+That one apply binds the read roles in the project and adds it to
+`spec.scope.projects`, which covers Steps 2 and 4 below; Step 3 (enabling the
+APIs) and the Verify section still apply. `SCOPE_EXCLUDE_PROJECTS` and
+`SCOPE_EXCLUDE_CLUSTERS` (`project/location/cluster`) declare exclusions the
+same way. The keys are described in the installer README's "Projects in scope"
+section, and the field in
+[`spec.scope`](/kube-agents/operator/platformagent-crd/#specscope).
 
 ## Setup
 
@@ -127,16 +156,28 @@ of the following approaches:
 
 #### Option A: Automatically discover all clusters in the project (`spec.scope.projects`)
 
-Add the target project IDs to [`spec.scope.projects`](/kube-agents/operator/platformagent-crd/#specscope)
-on the `PlatformAgent` resource so the hourly reconciler automatically creates
-and maintains a `cluster-<project>-<cluster>-<location>` profile for every GKE
-cluster in those projects:
+Declare the target project in [`spec.scope.projects`](/kube-agents/operator/platformagent-crd/#specscope)
+so the hourly reconciler automatically creates and maintains a
+`cluster-<project>-<cluster>-<location>` profile for every GKE cluster in it.
+On an install made with `install.sh`, do this through `SCOPE_PROJECTS`
+([Installer-managed installs](#installer-managed-installs)), not with
+`kubectl`.
+
+On an install you manage with Helm or `kubectl` directly, append the project to
+the existing list with a JSON patch. Do not use a merge patch with a one-element
+list: a merge patch replaces the whole array, and the reconciler retires every
+project that drops out of it, deleting their profiles two clean runs later.
 
 ```bash
 kubectl patch platformagent platform-agent -n kubeagents-system \
-  --type=merge \
-  -p '{"spec":{"scope":{"projects":["<OTHER_PROJECT_ID>"]}}}'
+  --type=json \
+  -p '[{"op":"add","path":"/spec/scope/projects/-","value":"<OTHER_PROJECT_ID>"}]'
 ```
+
+The `add` operation needs `spec.scope.projects` to exist already. If
+`kubectl get platformagent platform-agent -n kubeagents-system -o jsonpath='{.spec.scope.projects}'`
+prints nothing, the list is absent and the first project can be set with
+`--type=merge -p '{"spec":{"scope":{"projects":["<OTHER_PROJECT_ID>"]}}}'`.
 
 You can also exclude specific project globs or individual clusters under
 `spec.scope.exclude`; see [`spec.scope` in the `PlatformAgent` CRD reference](/kube-agents/operator/platformagent-crd/#specscope).
@@ -168,23 +209,39 @@ kubectl exec -it platform-agent-shell-0 -n kubeagents-system -c shell -- \
 ```
 
 If you configured `spec.scope.projects`, run the reconciler and inspect
-`/opt/data/fleet_scope.json` to confirm the project outcome is `ok` and its
-`cluster-*` profiles are registered:
+`fleet_scope.json` to confirm the project outcome is `ok` and its `cluster-*`
+profiles are registered. The gateway container already carries the install's
+`HERMES_HOME`, so the command reads it rather than assuming `/opt/data`:
 
 ```bash
 kubectl exec -i deployment/platform-agent-gateway -n kubeagents-system \
   -c platform-agent -- bash -lc '
-    /opt/hermes/.venv/bin/python3 /opt/data/scripts/cluster_agent_reconcile.py &&
-    cat /opt/data/fleet_scope.json &&
-    HERMES_HOME=/opt/data /opt/hermes/.venv/bin/hermes profile list
+    /opt/hermes/.venv/bin/python3 "$HERMES_HOME/scripts/cluster_agent_reconcile.py" &&
+    cat "$HERMES_HOME/fleet_scope.json" &&
+    /opt/hermes/.venv/bin/hermes profile list
   '
 ```
 
 ## Removing a project
 
-1. If you added the project to `spec.scope.projects`, remove it from that list
-   (keeping `spec.scope: {projects: []}` if it was the last additional project)
-   so the reconciler retires its Cluster Agent profiles over two clean runs.
+On an install made with `install.sh`:
+
+1. Remove the project from `SCOPE_PROJECTS` and add any chat-onboarded cluster
+   in it to `SCOPE_EXCLUDE_CLUSTERS` (`project/location/cluster`), then run
+   `./upgrade.sh --upgrade-mode=full`. The apply revokes the read roles the
+   installer bound there, and the reconciler retires the project's Cluster
+   Agent profiles over two clean runs; an excluded cluster loses its profile on
+   the next run.
+2. Revoke any binding you made by hand. A folder-level grant cannot be revoked
+   for one project alone; move the project out of the folder or grant per
+   project instead.
+
+On an install you manage with Helm or `kubectl` directly:
+
+1. If you added the project to `spec.scope.projects`, remove that entry with a
+   JSON patch `remove` operation on its index (keeping `spec.scope: {projects: []}`
+   if it was the last additional project) so the reconciler retires its Cluster
+   Agent profiles over two clean runs.
 2. If you onboarded clusters in chat, add each one to
    [`spec.scope.exclude.clusters`](/kube-agents/operator/platformagent-crd/#specscope)
    (`projectId`, `location`, `clusterName`). The reconciler keeps a
