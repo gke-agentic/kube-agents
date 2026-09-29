@@ -91,12 +91,14 @@ name: CI Health (dashboard refresh + presubmit gate adjudicator)
 # the job asks for pull-requests: write and issues: write and nothing else
 # does: the poster files the tracking issue a new OUTAGE lacks (label
 # presubmit-gate; it adopts a human's if one names the same cases, and
-# never closes one) and, for a new lost_pods or fixture_drift condition, the
+# never closes one), for a new lost_pods or fixture_drift condition, the
 # issue the cluster owner or the fleet owner is owed (same label; it adopts
-# a human's naming the same nodes or roles);
+# a human's naming the same nodes or roles), and for a deadline_kill OUTAGE
+# the gate owner's (it adopts a human's titled for the deadline kills);
 # scripts/eval_dashboard/gate_comment.py leaves one comment per
-# pull request whose smoke run went red -- or lost its build node -- since
-# the last tick, edited in place on later runs. Both are best-effort: a
+# pull request whose smoke run went red -- or lost its build node, or was
+# killed at the job deadline -- since the last tick, edited in place on
+# later runs. Both are best-effort: a
 # GitHub failure is a warning, retried next tick, never a failed run.
 #
 # A second job, on its own hourly cron: the seeded-fleet scan (#1550). It
@@ -106,7 +108,7 @@ name: CI Health (dashboard refresh + presubmit gate adjudicator)
 # fixture_drift condition, the digest carries one line of it, and a scan
 # that could check nothing is said once and is never a drift. Its own job
 # rather than a step gated on the top-of-hour tick, because it needs kubectl
-# and gke-gcloud-auth-plugin, runs thirty projects for a few minutes, and
+# and gke-gcloud-auth-plugin, runs every mapped project for a few minutes, and
 # must never delay the 15-minute verdict: the tick reads whatever scan is
 # published, and a late one is "stale" in health.json. Two crons fire at the
 # top of the hour; each run's `github.event.schedule` sends it to one job.
@@ -212,8 +214,9 @@ jobs:
       group: ci-health
       cancel-in-progress: false
     # The workflow-level grant plus the two writes the header explains: the
-    # gate comment on a pull request (a red run, or a lost build node) and
-    # the tracking issue (an OUTAGE, or a lost_pods condition).
+    # gate comment on a pull request (a red run, a lost build node, or a
+    # deadline kill) and the tracking issue (an OUTAGE, or a lost_pods
+    # condition).
     permissions:
       contents: read
       id-token: write
@@ -304,8 +307,9 @@ jobs:
           # document with nothing new; publishing that would stamp old runs
           # with a fresh generated_at. Refuse, so the stall stays visible.
           #
-          # The RC glob is excluded on purpose. This lane is advisory and must
-          # not be able to stall the dashboard: an RC listing that fails leaves
+          # The RC glob is excluded on purpose. What that lane's verdict gates
+          # is the staging deploy, not this dashboard, and it must not be able
+          # to stall it: an RC listing that fails leaves
           # releases[] carried forward from the prior and stales nothing, and
           # `gsutil ls` exits non-zero on a prefix with no objects, so a week
           # with no release candidate would otherwise stop every publish. Both
@@ -666,10 +670,10 @@ jobs:
           python-version-file: ".python-version"
 
       # kubectl for the presence probes and the state reads;
-      # gke-gcloud-auth-plugin for the kubeconfig gcloud writes before the
-      # runner rewrites it to the reader's exec credential (the plugin is the
-      # fallback when that rewrite cannot mint, and then every read fails as
-      # the publisher, which holds nothing on the project: "not checked").
+      # gke-gcloud-auth-plugin because the kubeconfig gcloud writes, before
+      # the runner rewrites it to the reader's exec credential, names it. The
+      # runner mints as the reader once, up front, and stops with nothing
+      # written when it cannot ("not checked" for the project).
       - name: Set up Cloud SDK (with kubectl and the GKE auth plugin)
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
         with:

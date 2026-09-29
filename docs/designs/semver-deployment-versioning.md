@@ -27,8 +27,11 @@ documentation and governance playbooks around them.
    avoiding a separate module-registry backend.
 3. **The staging rung feeds SemVer promotion.** Pre-release validation keeps using RC tags
    (`rc_YYMMDDHHMM_<short_sha>`, `*_validated` on success), and the nightly pipeline promotes a
-   validated candidate that passes the full E2E matrix to `staging_YYMMDDHHMM_<short_sha>`. That
-   staging tag is what a GA release is gated on — see `scripts/release/README.md`.
+   validated candidate that passes the full E2E matrix to `staging_YYMMDDHHMM_<short_sha>`. The
+   promotion has a second gate in front of it: the nightly first pushes
+   `evalcand_YYMMDDHHMM_<short_sha>`, which triggers the release-candidate eval on Prow, and only a
+   GREEN verdict there produces the staging tag. That staging tag is what a GA release is gated on —
+   see `scripts/release/README.md`.
 4. **GA release pipeline creates stamped release child commit.** When promoting a staging-promoted
    candidate, `release-publish.yml` creates a single-parent child commit on detached HEAD
    (baking `BAKED_RELEASE_VERSION` into installer scripts, and stamping SemVer release versions into Helm `Chart.yaml` and Terraform defaults), tags it `MAJOR.MINOR.PATCH` (`X.Y.Z`),
@@ -44,20 +47,21 @@ documentation and governance playbooks around them.
 
 ## 3. What ships
 
-| Artifact             | Mechanism                                                                                                                                                                                                                                                                     |
-| :------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Container images     | Built once on push to `main` (tagged with commit SHA and `:latest`). Clean Promotion (`release-publish.yml` / `promote_release_images.sh`) promotes verified images to `X.Y.Z` without rebuilding.                                                                            |
-| Operator default tag | Dynamic runtime derivation from running operator container image / `OPERATOR_IMAGE` env var (with `DefaultPlatformAgentVersion` for local development fallback).                                                                                                              |
-| Helm chart           | `charts/kube-agents/` (CRDs, operator, PlatformAgent CR), packaged with version = appVersion = tag, published and cosign-signed by digest via `release-publish.yml` (`publish_helm_chart.sh`).                                                                                |
-| Terraform modules    | `terraform/modules/{gke-cluster,kube-agents-iam,chat-pubsub,github-minter,drift-pubsub}/`, consumed via `?ref=1.2.0`; `terraform/examples/full-install/` composes the first four plus the chart into one apply (`drift-pubsub` is tagged and consumable but not yet composed) |
-| Release guide        | [Release versioning & promotion](../site/src/content/docs/deploy/release-versioning.md)                                                                                                                                                                                       |
-| Governance           | `standardization_validator_sop.md` Rule 3 (immutable-tag compliance); pre-release artifact checks live in CI (`validate.yml` and the RC pipeline), not in an agent SOP                                                                                                        |
+| Artifact             | Mechanism                                                                                                                                                                                                                                                                               |
+| :------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Container images     | Built once on push to `main` (tagged with commit SHA and `:latest`). Clean Promotion (`release-publish.yml` / `promote_release_images.sh`) promotes verified images to `X.Y.Z` without rebuilding.                                                                                      |
+| Operator default tag | Dynamic runtime derivation from running operator container image / `OPERATOR_IMAGE` env var (with `DefaultPlatformAgentVersion` for local development fallback).                                                                                                                        |
+| Helm chart           | `charts/kube-agents/` (CRDs, operator, PlatformAgent CR), packaged with version = appVersion = tag, published and cosign-signed by digest via `release-publish.yml` (`publish_helm_chart.sh`).                                                                                          |
+| Terraform modules    | `terraform/modules/{gke-cluster,kube-agents-iam,chat-pubsub,github-minter,gke-backup-plan,drift-pubsub}/`, consumed via `?ref=1.2.0`; `terraform/examples/full-install/` composes every module plus the chart into one apply (`drift-pubsub` behind `enable_drift_pubsub`, default off) |
+| Release guide        | [Release versioning & promotion](../site/src/content/docs/deploy/release-versioning.md)                                                                                                                                                                                                 |
+| Governance           | `standardization_validator_sop.md` Rule 3 (immutable-tag compliance); pre-release artifact checks live in CI (`validate.yml` and the RC pipeline), not in an agent SOP                                                                                                                  |
 
 ## 4. Version flow
 
 ```mermaid
 graph TD
-    A["RC pipeline: rc_YYMMDDHHMM_sha → *_validated"] --> A2["Nightly pipeline: full E2E matrix → staging_YYMMDDHHMM_sha"]
+    A["RC pipeline: rc_YYMMDDHHMM_sha → *_validated"] --> A1["Nightly pipeline: full E2E matrix → evalcand_YYMMDDHHMM_sha"]
+    A1 --> A2["Release-candidate eval on Prow: GREEN → staging_YYMMDDHHMM_sha"]
     A2 --> B["Release Publish Workflow (release-publish.yml)"]
     B --> C["Clean Image Promotion: retags :sha to :X.Y.Z in GHCR"]
     B --> D["CI publishes + signs OCI chart (version = appVersion = X.Y.Z)"]

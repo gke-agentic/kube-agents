@@ -383,6 +383,13 @@ type HarnessSpec struct {
 	// +optional
 	EventWatcher *EventWatcherSpec `json:"eventWatcher,omitempty"`
 
+	// DriftDetector configures out-of-band change detection — the drift-detector
+	// that reads GKE admin-activity audit records from a Pub/Sub subscription and
+	// turns the ones a person made outside git into triage cards. Off unless asked
+	// for, unlike EventWatcher above.
+	// +optional
+	DriftDetector *DriftDetectorSpec `json:"driftDetector,omitempty"`
+
 	// Tuning sets per-persona execution limits. Unset values keep the defaults
 	// baked into the agent image.
 	// +optional
@@ -513,6 +520,58 @@ type EventWatcherSpec struct {
 	// +kubebuilder:default=true
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// DriftDetectorSpec configures the drift-detector, which runs as a peer service
+// inside the gateway pod's agent-api-auth sidecar alongside the API authenticator
+// and the k8s-event-watcher. Not alongside Envoy or the credential runtime: those
+// moved to the credential pod, and CREDENTIAL_PROXY_ROLE=api-proxy is what tells
+// the shared entrypoint not to start them here.
+//
+// It pulls GKE admin-activity audit records from a Pub/Sub subscription, drops
+// the ones no human made, joins each survivor against the live object to see
+// whether the change still stands, and posts what is left to the pod-local
+// Session KV server as a gitops-drift inject.
+//
+// It answers a different question from the watcher beside it. An event says
+// Kubernetes is unhappy; a drift record says a person changed a live object outside
+// git, and asks the reader which of the two states should win.
+type DriftDetectorSpec struct {
+	// Enabled controls whether the detector is started. Absent means not started,
+	// the opposite of EventWatcher, and the reason is a dependency rather than
+	// caution: the detector reads a Pub/Sub subscription that exists only where the
+	// drift-pubsub Terraform module was applied. An install without one that started
+	// the detector anyway would get a process that never exits and never reports a
+	// change — the subscription is not checked at startup, and a pull that fails
+	// because it does not exist is retried for the life of the pod. The pod stays
+	// Ready, so an install left on by accident is indistinguishable from a fleet
+	// nobody has touched.
+	//
+	// Setting it is necessary and not sufficient. The detector also needs
+	// spec.harness.projectId, .location and .clusterName, because it verifies the
+	// cluster name it is given against the cluster its credentials actually reach and
+	// stops on a disagreement — so a half-named harness would give a restart loop.
+	// The operator treats that combination as the detector staying off.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Subscription is the Pub/Sub subscription carrying the audit records. Empty
+	// takes the detector's own default, which is the name the drift-pubsub module
+	// creates; set it only for a subscription made by hand or renamed.
+	// +optional
+	Subscription string `json:"subscription,omitempty"`
+
+	// GitopsManagers names the managedFields managers that are the GitOps controller
+	// — `argocd-controller`, `flux`. Comma-separated and matched exactly.
+	//
+	// Empty is supported and degrades rather than fails. Ownership is still read and
+	// reported, but no record is ever marked as possibly reconciled, so every card
+	// asks its reader to check the live object without the hint that a controller may
+	// already have reverted the change. Naming a manager that does not write to these
+	// objects has the same effect as leaving it empty.
+	// +optional
+	GitopsManagers string `json:"gitopsManagers,omitempty"`
 }
 
 // TuningSpec carries execution limits per agent persona.
@@ -1004,11 +1063,9 @@ type SecuritySpec struct {
 	// for egress by <name>-gateway-netpol, which the operator renders on every
 	// reconcile whether this field is set or not — unless
 	// spec.networkPolicy.enabled is false, which withholds the gateway policy.
-	// On a Helm install that makes this the Pod's only policy: the one shape
-	// where this field enforces for real on an enforcing CNI, denying
-	// everything off its list. A Kustomize install still carries the static
-	// platform-agent-core-egress set over the same Pod, so the union resumes
-	// there. Everywhere else, turning this on leaves the
+	// That makes this the Pod's only policy: the one shape where this field
+	// enforces for real on an enforcing CNI, denying everything off its list.
+	// Everywhere else, turning this on leaves the
 	// Pod's permitted egress a strict superset of what it was. In the default
 	// shape the only destination it adds is the credential broker on TCP 8765
 	// — plus, when the agent is not exporting telemetry, the managed collector
@@ -1031,12 +1088,6 @@ type SecuritySpec struct {
 	//     FQDNNetworkPolicy annotation is set. So every HTTPS destination on
 	//     the public internet stays open, and with it the exfiltration half of
 	//     what this control is meant to be.
-	//
-	// A Kustomize install additionally applies platform-agent-core-egress
-	// (deploy/kustomize/platform/networkpolicy-core-egress.yaml), which selects
-	// the agent Pod by app.kubernetes.io/name and permits the same metadata
-	// path. A Helm install does not carry it, and it changes nothing either
-	// way: the gateway policy alone is enough to make the point above.
 	//
 	// The overlap is deliberate rather than an oversight. Workload Identity
 	// needs the metadata path, and <name>-gateway-netpol still permits it to
@@ -1571,6 +1622,70 @@ type AgentStatus struct {
 	// NetworkPolicy reports the resolved egress NetworkPolicy configuration.
 	// +optional
 	NetworkPolicy NetworkPolicyStatus `json:"networkPolicy,omitempty"`
+
+	// Note, deliberately not a doc comment — the blank line below keeps it out of the
+	// CRD description that `kubectl explain` prints. As on the structs above, omitempty
+	// does nothing on a struct field, so this key is always serialised, as `{}` before
+	// the first reconcile; its own fields do carry omitempty, so a counter nothing has
+	// written is absent rather than 0.
+
+	// Usage summarises the agent's activity: the interfaces its spec enables and
+	// aggregate counters of what it has done.
+	// +optional
+	Usage AgentUsageStatus `json:"usage,omitempty"`
+}
+
+// AgentUsageStatus is the non-sensitive activity summary of an agent. Static
+// enums and integer counts only: no prompt, message, resource name or secret is
+// ever written here, so the whole struct is safe to read with the same access
+// as the rest of the status.
+//
+// Today the operator writes ActiveInterfaces, from the spec, on every Ready status
+// update. The counters and LastActiveTime are declared so that the schema names
+// them, but nothing writes them yet — the agent's own ServiceAccount holds no
+// write verb on this status, and the operator has no producer for them — so each
+// is absent (omitempty) on every install until one exists.
+type AgentUsageStatus struct {
+	// SessionsTotal is the cumulative number of interactive sessions handled.
+	// Nothing writes it yet.
+	// +optional
+	SessionsTotal int64 `json:"sessionsTotal,omitempty"`
+
+	// EventsIngestedTotal is the cumulative count of cluster events ingested and evaluated.
+	// Nothing writes it yet.
+	// +optional
+	EventsIngestedTotal int64 `json:"eventsIngestedTotal,omitempty"`
+
+	// ToolExecutionsTotal is the cumulative count of CLI and diagnostic tool invocations.
+	// Nothing writes it yet.
+	// +optional
+	ToolExecutionsTotal int64 `json:"toolExecutionsTotal,omitempty"`
+
+	// RemediationsProposedTotal is the cumulative count of remediations generated.
+	// Nothing writes it yet.
+	// +optional
+	RemediationsProposedTotal int64 `json:"remediationsProposedTotal,omitempty"`
+
+	// RemediationsAppliedTotal is the cumulative count of remediations approved and applied.
+	// Nothing writes it yet.
+	// +optional
+	RemediationsAppliedTotal int64 `json:"remediationsAppliedTotal,omitempty"`
+
+	// ActiveInterfaces lists the communication channels the spec enables, sorted:
+	// "dashboard" unless spec.harness.hermes.dashboardEnabled is false, and
+	// "googlechat", "slack" and "teams" for each spec.integration entry whose
+	// enabled is true. Resolved on every reconcile and written by the Ready
+	// status update when it changes; a pass that parks the CR Degraded leaves
+	// the previous value, so read it alongside the Ready condition, as
+	// networkPolicy.generated is read. Absent while the served CRD predates it.
+	// +listType=set
+	// +optional
+	ActiveInterfaces []string `json:"activeInterfaces,omitempty"`
+
+	// LastActiveTime is the timestamp of the most recent interaction or event triage.
+	// Nothing writes it yet.
+	// +optional
+	LastActiveTime *metav1.Time `json:"lastActiveTime,omitempty"`
 }
 
 const (

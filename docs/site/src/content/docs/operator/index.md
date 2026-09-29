@@ -31,7 +31,7 @@ Custom resources in the `kubeagents.x-k8s.io/v1alpha1` API group:
 
 The controller reconciles a `PlatformAgent` into:
 
-- A `Deployment` (named `<name>-gateway`) for the Platform Agent, running the Hermes runtime with a Fluent Bit log-forwarding sidecar and an `agent-api-auth` sidecar that terminates the PlatformAgent API bearer key and runs the `k8s-event-watcher`. The gateway executes nothing the model wrote; which credentials it does hold, and why, are on [Credential isolation](/kube-agents/reference/credential-isolation/).
+- A `Deployment` (named `<name>-gateway`) for the Platform Agent, running the Hermes runtime with a Fluent Bit log-forwarding sidecar and an `agent-api-auth` sidecar that terminates the PlatformAgent API bearer key, runs the `k8s-event-watcher`, and runs the `drift-detector` where an install has enabled it. The gateway executes nothing the model wrote; which credentials it does hold, and why, are on [Credential isolation](/kube-agents/reference/credential-isolation/).
 - A `StatefulSet` (named `<name>-shell`) and its `Service`, the shell sandbox: `sshd` on `2222`, the durable `/opt/data`, and the wrappers that stand in for `gcloud`, `kubectl`, `gh` and `git`. This is the pod that runs model-authored commands, and its ServiceAccount carries no Workload Identity annotation.
 - A `Deployment` (named `<name>-credential-proxy`), a `ClusterIP` `Service` on port `8765`, and a `NetworkPolicy` narrowing who may reach it — the credential broker, which holds every credential in the install and executes the real CLIs on the sandbox's behalf. See [Credential isolation](/kube-agents/reference/credential-isolation/).
 - A `Service` fronting the gateway `Deployment` (API port `8642`, plus dashboard port `9119` when the dashboard is enabled).
@@ -40,7 +40,7 @@ The controller reconciles a `PlatformAgent` into:
 - `PersistentVolumeClaim`s for the agent's data and system metadata.
 - `ConfigMap`s for the pod: config overlays merged into each Hermes profile's `config.yaml` at startup (including the whole rendered config for the default, Planning Agent, profile — see [how config reaches each profile](/kube-agents/operator/platformagent-crd/#how-config-reaches-each-profile)), a `SETTINGS.md` (GKE scope) mounted into `/opt/data/`, the [`spec.scope`](/kube-agents/operator/platformagent-crd/#specscope) declaration as `scope.json` mounted at `/etc/kube-agents/`, and a Fluent Bit config for the logging sidecar. Each profile's base config is baked into the image and scaffolded at startup.
 - Optional integrations wired through the CR `spec.integration` block: Google Chat (Pub/Sub topic/subscription), Slack (bot/app token secret refs), and GitHub (GitOps repo, with the GitHub Token Minter endpoint injected as an env var).
-- Under the unsupported `spec.mode: next` dev toggle, additionally the A2A playground stack (NATS, bus provisioning, the auth callout, the A2A gateway) — see the [PlatformAgent CRD page](/kube-agents/operator/platformagent-crd/) for what it renders.
+- Under the unsupported `spec.mode: next` dev toggle, additionally the A2A playground stack (NATS, bus provisioning, the auth callout and, once a chat backend is configured, the A2A gateway) — see the [PlatformAgent CRD page](/kube-agents/operator/platformagent-crd/) for what it renders.
 
 ## Custom resource shape
 

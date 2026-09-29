@@ -133,8 +133,8 @@ resource "google_project_iam_member" "fleet_reader_container_viewer" {
 # Who may mint a token AS the reader. Defaults to the pool's Prow runner, which
 # is what closes the write path -- see variables.tf for why the default lives
 # there rather than in the caller. A project with no entry still gets the
-# account; its runs just fall back to the runner's own credential with a loud
-# warning from fleet-kubeconfigs.sh, rather than failing to read the fleet.
+# account, but fleet-kubeconfigs.sh refuses to read the fleet on the runner's
+# own credential, so a run that leases it stops at its fleet step.
 resource "google_service_account_iam_member" "fleet_reader_token_creators" {
   for_each           = toset(var.fleet_reader_token_creators)
   service_account_id = google_service_account.fleet_reader.name
@@ -405,14 +405,14 @@ resource "google_container_node_pool" "pinned_inference_pool" {
 
 # Defect (upgrades): held one minor behind the REGULAR channel default --
 # and ENROLLED in REGULAR, which is what makes the lag visible at all. The
-# upgrade SOP's master-behind check keys every branch off the cluster's
+# upgrade SOP's master-behind check grades (b) and (c) off the cluster's
 # channel entry in get-server-config: branch (b), the one this defect
 # exists to trip, is minor(currentMasterVersion) < minor(channel
 # defaultVersion), severity major. A channel-less cluster has no channels[]
-# entry, so (b)/(c) cannot evaluate, and branch (a) -- version absent from
-# validMasterVersions -- is false by construction here because the pin is
-# drawn from that very list. The earlier UNSPECIFIED design hid the defect
-# from the audit it was planted for.
+# entry, so (b)/(c) cannot evaluate; the earlier UNSPECIFIED design hid the
+# defect from the audit it was planted for. Branch (a) -- version offered by
+# no channel and absent from validMasterVersions -- stays false while the
+# pin, drawn from that very list, remains in it.
 #
 # What holds the lag under a channel: the maintenance exclusion below, at
 # scope NO_MINOR_UPGRADES. Each re-apply stamps a fresh window from now

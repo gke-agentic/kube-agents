@@ -150,7 +150,8 @@ after merge (#658). CI runs the same check in
 at and why — read it before changing the target.
 
 **Third-party download retries.** A non-piped `curl` that fetches over the network in
-`deploy/docker/Dockerfile`, `deploy/sandbox/Dockerfile` or `hack/ci-env.sh` needs both
+`deploy/docker/Dockerfile`, `deploy/sandbox/Dockerfile`, `hack/ci-env.sh` or
+`.github/workflows/validate.yml` needs both
 `--retry N` and `--retry-all-errors` — the count alone does not survive a connection reset
 mid-transfer, and without either a bad second from the upstream CDN fails a build that has
 nothing to do with the download. `tests/test_third_party_download_retry.py` fails the pull
@@ -192,6 +193,33 @@ Hindsight's images sit behind `hindsight.enabled` — unset by default, and then
 `images.json`, run `make images-check` and `make docs-generate`, then grep the tree for the old
 version before opening the pull request.
 
+**CodeQL alerts.** CodeQL runs here through GitHub's default setup, which analyses pushes to `main`
+and the other protected branches, a weekly schedule, and, intermittently, pull requests whose head
+branch lives in this repository; in the repository's history one fork pull request has been
+analysed, and no pull request of any kind since early September. Contributor branches live on
+forks, so a change that closes a code-scanning alert cannot count on CI to show it closing.
+Reproduce it locally instead: install the CLI as a `gh` extension, pin it to the version the
+alert's `tool.version` reports, and build a database over a scratch tree holding the flagged file
+at its repository path, once before the change and once after:
+
+```bash
+gh extension install github/gh-codeql
+gh codeql set-version 2.27.1 # the alert's tool.version
+gh codeql database create /tmp/cq/db --language=python --source-root /tmp/cq/tree
+gh codeql database analyze /tmp/cq/db \
+  codeql/python-queries:Security/CWE-312/CleartextLogging.ql \
+  --download --format=sarif-latest --output /tmp/cq/out.sarif
+```
+
+An alert names a rule id, not a query. The query is the `.ql` in the pack whose `@id` matches it:
+after the first `--download`,
+`grep -rl '@id py/clear-text-logging-sensitive-data' ~/.codeql/packages/codeql/python-queries/`
+finds `Security/CWE-312/CleartextLogging.ql`, and `CleartextStorage.ql` beside it is the storage
+rule. The before run has to reproduce the alert at `main`'s line, and the SARIF's `codeFlows` names
+the source the flagged line was reached from; the after run reports none. Quote both under
+**Testing**. The pack `--download` resolves can differ from the one the hosted analysis ran, so the
+code-scanning tab on the merged head is still the final check.
+
 **Everything at once.** `make verify` runs what a pull request must pass offline — Go build, vet
 and test, the Python suites, the conformance suite. The per-area targets it wraps, for a faster
 loop while you work:
@@ -200,9 +228,9 @@ loop while you work:
   check; see **Shell scripts** above for the release to install.
 - `make validate` — the structure check in the `Validate Repo Structure` job; fails if skills
   live under `agents/*/defaults/skills/` instead of `agents/*/skills/`.
-- `make -C k8s-operator test` — manifests, generate, fmt, vet, the Python suites under
-  `k8s-operator/internal/controller` and `agents/platform/scripts`, then the envtest download and
-  `go test`; what the `Operator Tests` job runs.
+- `make -C k8s-operator test` — manifests, generate, fmt, vet, the Python suite under
+  `k8s-operator/internal/controller` (the gateway's leader-election wrapper; `make test-python`
+  runs it too), then the envtest download and `go test`; what the `Operator Tests` job runs.
 - `make test-integration` — the seam tier only, for a component another one talks to across a
   process or protocol boundary. Install a Go toolchain first: the injector seam compiles the real
   Go event-watcher client, and without `go` on `PATH` its tests skip and the run still prints

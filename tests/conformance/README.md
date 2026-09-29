@@ -83,7 +83,7 @@ reads with an anchor string that `test_harness_selfcheck.py` verifies. Rename
 a symbol and the self-check goes red before anything gets a chance to pass
 quietly.
 
-One set of inputs is not registered: the group-B workflow tests glob
+Two sets of inputs are not registered. The group-B workflow tests glob
 `.github/workflows/*.y*ml` (both extensions, so a `.yaml` workflow cannot
 slip past an allowlist) rather than naming each file, because the assertion
 is about the set and a registry would have to be edited every time a workflow
@@ -93,11 +93,17 @@ and B4's `workflow_run` gate and its `pull_request_target` checkout test each
 assert their own filtered subset non-empty. The fifth asserts an absence, and
 an absence is true of the empty set, so `_workflows()` in
 `test_B_write_path.py` raises on its behalf. C4's SHA-pin sweep keeps its own
-copy of the glob and guards it the same way. C4 is the invariant; its stricter
-form, which also requires the version comment beside each SHA and a digest on a
-`docker://` ref, and the fork-guard check on every auto-triggered credentialed
-workflow, run under `make test-python` in
+copy of the glob and guards it the same way. C4 is the invariant; its
+stricter form, which also requires the version comment beside each SHA and a
+digest on a `docker://` ref, and the fork-guard check on every auto-triggered
+credentialed workflow, run under `make test-python` in
 `tests/test_workflow_pins_and_fork_guards.py`.
+
+The other is the site's content tree, which D2 walks for the read-only
+switch. `_harness.site_pages()` raises when the tree is missing or holds no
+page, the security reference under it is registered so the self-check names
+the tree when it moves, and the test requires the pages to name the broker's
+other variables before it reads their silence on this one.
 
 ## Invariant → test → bucket → historical attack
 
@@ -122,6 +128,9 @@ currently fails.
 | A2  | two users with different RBAC get different outcomes                       | 2        | `Scenario1`, `Scenario2`                                                            | shared-identity execution: every allowlisted chat user wields the agent's full authority                                                                                                                                                                 |
 | A2  | the agent ceiling binds a cluster-admin requester                          | 2        | `Scenario3`                                                                         | —                                                                                                                                                                                                                                                        |
 | A2  | staleness bound N                                                          | **3**    | —                                                                                   | N is unset. Three unstated Ns (A2, C2, D6), all needing owners.                                                                                                                                                                                          |
+| A3  | the eval inject door renders only under the operator's flag                | 1        | `test_A3_the_inject_door_renders_only_under_the_operator_flag`                      | a door mapping a body-supplied principal, rendered on an install that never asked for it                                                                                                                                                                 |
+| A3  | the eval door's flag is not a field a customer can set                     | 1        | `test_A3_the_inject_flag_is_not_a_field_a_customer_can_set`                         | "render the eval door" reachable from a `PlatformAgent`, which the operator would be obliged to honour                                                                                                                                                   |
+| A3  | the eval door cannot assert a cloud principal                              | 1        | `test_A3_the_inject_door_cannot_assert_a_cloud_principal`                           | a map entry pointing the eval door at a real identity: an identity-minting door the day publisher identity arms                                                                                                                                          |
 | A3  | caller-supplied `--as` refused, all five flags, both separators            | 1        | `test_A3_rejects_caller_supplied_as`                                                | impersonation asserted by the caller                                                                                                                                                                                                                     |
 | A3  | `--kuberc` refused                                                         | 1        | `test_A3_rejects_kuberc`                                                            | **slice 2a**: a YAML file injecting `as: system:admin` with nothing in argv                                                                                                                                                                              |
 | A3  | `--flags-file` refused                                                     | 1        | `test_A3_rejects_gcloud_flags_file`                                                 | the same attack in gcloud's spelling, found first                                                                                                                                                                                                        |
@@ -261,13 +270,12 @@ python3 hack/conformance-mutations.py --list
 python3 hack/conformance-mutations.py -k C1    # substring filter on the id
 ```
 
-106 mutations: 81 KILLED, 22 NOISY, one STALE (`A3-supervisor-terminal-back-on-events`, whose
-target text left `main` before this change; it is not this change's to rewrite), two `must_survive` controls (one on the
+114 mutations: 88 KILLED, 24 NOISY, two `must_survive` controls (one on the
 harness itself, one pinning a deliberate redundancy in the shorthand
-handling), zero genuine survivors, zero stale — measured 2026-09-21 against
-this branch merged with `main`; re-run the harness rather than trusting
+handling), zero genuine survivors, zero stale — measured 2026-09-25 against
+this branch on `main` at `525b37e7`; re-run the harness rather than trusting
 these numbers, which is the sentence this paragraph exists to make cheap.
-Note that the summary line the harness prints accounts for 103 of the 105: a
+Note that the summary line the harness prints accounts for 112 of the 114: a
 `must_survive` control's verdict is `SURVIVED (expected)`, which is neither
 killed, noisy, nor a survivor. Each mutation names the control it removes,
 the test that must notice, and the plausible bad change it imitates. It is
@@ -306,7 +314,9 @@ suite once at the end: a run that ends red says so and exits non-zero.
 ## Adding a test
 
 1. Register every artifact you read in `_harness.SOURCES`, with an anchor
-   substring whose loss makes your assertion meaningless.
+   substring whose loss makes your assertion meaningless. A _set_ of files
+   is the one exception, and it owes what the two above pay: a helper that
+   raises on empty, and a registered member the test requires to be in it.
 2. Name the test after the invariant: `test_A3_rejects_caller_supplied_as`.
    `test_harness_selfcheck.py` reads that prefix to check coverage.
 3. Assert the _refusal_, never the presence of the control. Twice in this

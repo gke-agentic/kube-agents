@@ -85,6 +85,29 @@ else
   return 1 2>/dev/null || exit 1
 fi
 
+# gke_dns_endpoint_flag: whether a given cluster is reached over its IP or its
+# DNS control-plane endpoint. Three levels up like the defaults above, and
+# resolved the same way, since this script runs only inside the repository.
+#
+# This is the composition's one dependency on scripts/installer/. The helper is
+# deliberately free of that directory's state file and print helpers so it can
+# be sourced from anywhere — hack/ci-env.sh and scripts/release/common.sh
+# already do — and teardown has to reach a cluster over the same endpoint the
+# install used. A local copy of the predicate would be the alternative, and it
+# would drift.
+#
+# Absent, a stub keeps the pre-helper command rather than stopping the run: the
+# defaults above decide what gets applied, while this only picks an endpoint to
+# dial, and a teardown is the worst place to refuse over the difference.
+GKE_DNS_ENDPOINT_HELPER="../../../scripts/installer/gke_dns_endpoint.sh"
+if [[ -r "$GKE_DNS_ENDPOINT_HELPER" ]]; then
+  # shellcheck source=../../../scripts/installer/gke_dns_endpoint.sh
+  . "$GKE_DNS_ENDPOINT_HELPER"
+else
+  warn "cannot find the control-plane endpoint helper at ${GKE_DNS_ENDPOINT_HELPER}; reaching clusters over their IP endpoint."
+  gke_dns_endpoint_flag() { GKE_DNS_ENDPOINT_FLAG=""; }
+fi
+
 # Remote state, opt-in. The composition ships no backend block — a hand-driven
 # example works fine on local state — but an installer-driven one cannot:
 # install.sh may run from a disposable clone, and uninstall.sh and upgrade.sh
@@ -135,6 +158,15 @@ readonly MINTER_KEY_ABSENT_PATTERN='NOT_FOUND|SERVICE_DISABLED|has not been used
 readonly HELM_RELEASE_ADDRESS="helm_release.kube_agents"
 readonly AGENT_GSA_ADDRESS="module.kube_agents_iam.google_service_account.agent"
 readonly CHAT_SUBSCRIPTION_ADDRESS="module.chat_pubsub[0].google_pubsub_subscription.chat_events"
+readonly STATE_LOCK_MESSAGE_PATTERN='(Acquiring|Releasing) state lock\.'
+# The drift-pubsub module's three importable resources, adopted by adopt_kms
+# the way the stockout trio is. Their names are read from the composition's
+# drift_pubsub_topic, drift_pubsub_subscription and drift_pubsub_sink
+# variables, which main.tf passes to the module, so the name adopted is always
+# the name this state would create.
+readonly DRIFT_TOPIC_ADDRESS="module.drift_pubsub[0].google_pubsub_topic.drift_audit"
+readonly DRIFT_SUBSCRIPTION_ADDRESS="module.drift_pubsub[0].google_pubsub_subscription.drift_audit"
+readonly DRIFT_SINK_ADDRESS="module.drift_pubsub[0].google_logging_project_sink.drift_audit"
 
 #
 # One argument, "readonly", suppresses the bucket creation for `plan`. A plan
@@ -237,7 +269,7 @@ tfvar() {
     warn "could not evaluate var.$1 (see the terraform error above)"
     exit 1
   fi
-  value=$(printf '%s\n' "$out" | tail -1 | tr -d '"')
+  value=$(printf '%s\n' "$out" | grep -vE "$STATE_LOCK_MESSAGE_PATTERN" | grep -v '^[[:space:]]*$' | tail -1 | tr -d '"')
   case "$value" in
     null | "tostring(null)") value="" ;;
   esac
@@ -370,6 +402,24 @@ adopt_kms() {
       "google_pubsub_topic.stockout_alerts[0]	pubsub_topic	projects/$project/topics/$stockout_topic"
       "google_pubsub_subscription.stockout_alerts[0]	pubsub_sub	projects/$project/subscriptions/$stockout_sub"
       "google_logging_project_sink.stockout_alerts[0]	logging_sink	projects/$project/sinks/$stockout_sink"
+    )
+  fi
+
+  if [[ "$(tfvar enable_drift_pubsub)" == "true" ]]; then
+    # Adoption is by name, and the names are one fixed default per project,
+    # so an install that shares a project with another one names its own trio
+    # (the README's second-install section); this block cannot tell a
+    # resource an earlier install left behind from one another live install
+    # owns. As with the stockout trio, each variable has a default, so tfvar
+    # never returns empty here.
+    local drift_topic drift_sub drift_sink
+    drift_topic=$(tfvar drift_pubsub_topic)
+    drift_sub=$(tfvar drift_pubsub_subscription)
+    drift_sink=$(tfvar drift_pubsub_sink)
+    targets+=(
+      "$DRIFT_TOPIC_ADDRESS	pubsub_topic	projects/$project/topics/$drift_topic"
+      "$DRIFT_SUBSCRIPTION_ADDRESS	pubsub_sub	projects/$project/subscriptions/$drift_sub"
+      "$DRIFT_SINK_ADDRESS	logging_sink	projects/$project/sinks/$drift_sink"
     )
   fi
 
@@ -789,8 +839,20 @@ delete_agent_cr() {
   location=$(tfvar location)
   project=$(tfvar project_id)
 
+  # Through the helper, so teardown reaches the cluster over the endpoint the
+  # install used. Without the flag a cluster whose IP endpoint this host cannot
+  # route to gets that IP written into the kubeconfig, and the guard below does
+  # not catch it: get-credentials is a describe plus a file write, neither of
+  # which touches the control plane, so it exits 0. The kubectl after it then
+  # reads an unreachable cluster as a namespace holding no PlatformAgent, and
+  # teardown reports success having left the finalizer's cluster-scoped RBAC
+  # behind — the objects nothing else garbage-collects.
+  GKE_DNS_ENDPOINT_FLAG=""
+  gke_dns_endpoint_flag "$cluster" "$location" "$project" || true
+  # Unquoted on purpose: empty must contribute no argument. See gke_dns_endpoint.sh.
+  # shellcheck disable=SC2086
   if ! gcloud container clusters get-credentials "$cluster" --location "$location" \
-        --project "$project" >/dev/null 2>&1; then
+        --project "$project" $GKE_DNS_ENDPOINT_FLAG >/dev/null 2>&1; then
     log "cluster unreachable; nothing to delete in-cluster"
     return 0
   fi

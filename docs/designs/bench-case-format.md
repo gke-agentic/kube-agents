@@ -164,36 +164,47 @@ fields, and it may be a compound node: `sequence` (ordered, fail-fast), `paralle
 Three read the cluster, from devops-bench: `resource_property` (a JSONPath property of
 matched objects, with `op` one of eq/ne/gt/gte/lt/lte/exists/absent/contains/matches),
 `pod_healthy` (pods matching a selector reach Ready), and `scaling_complete` (a
-deployment's ready replicas land in a range).
+deployment's ready replicas land in a range). A fourth, `fleet_resource_property`, is
+this repository's `resource_property` against the seeded-fleet cluster that carries a
+fixture role, named by `fixture_role:` rather than by cluster.
 
-Five read what the run produced, from this repository
+Six read what the run produced, from this repository
 (`bench/kube_agents_bench/verifiers.py`, registered through the
 `devops_bench.verifiers` entry-point group in `bench/pyproject.toml`):
-`report_contains` (phrases in the agent's answer), `tool_called` (calls in the
+`report_contains` (phrases in the agent's answer; its `forbidden_patterns` are
+regular expressions, for a banned word whose negated uses are legitimate and
+which no substring can express), `tool_called` (calls in the
 trajectory), `ledger_issue_contains` (the GitHub ledger issue a fleet audit
 published), `pull_request_opened` (the remediation pull request the run opened,
 resolved through GitHub and required to be this run's rather than an earlier
 repetition's), and `worker_commands` (regular expressions over the terminal commands
 the delegated workers ran, read from each card's worker log before the harness
-purges it).
+purges it), and `worker_agents` (regular expressions every one of which must match the
+profile at least one delegated worker ran as, read from the tags the harness puts on the
+workers' trajectory entries).
 
-Two limits are worth knowing before choosing one. `tool_called` counts the delegating
-turn's calls only — the harness appends the delegated workers' calls to the trajectory
-tagged with the profile that made them, and the verifier skips every tagged entry — so
-it can assert what the router did and nothing about what a worker did to a cluster. A
-mutation safeguard built on it is blind to the calls it fears; use `resource_property`
-for those.
+Two limits are worth knowing before choosing one. `tool_called` defaults to
+`scope: router`, the delegating turn's calls only — the harness appends the delegated
+workers' calls to the trajectory tagged with the profile that made them, and the default
+scope skips every tagged entry, so a check written before the workers' calls were recorded
+still means what it meant. `scope: workers` counts the tagged entries instead and is the
+one deterministic check that sees which MCP tool a worker reached for — a worker invokes
+MCP tools through Hermes' `tool_call` wrapper, and the check reads the tool names inside
+it; `all` counts both.
+Either non-default scope returns `status: "error"` on a trajectory with no tagged entry (no
+card delegated, or the capture did not run) rather than passing on an absence. A
+cluster-mutation safeguard is still a cluster-state check (`resource_property`): a call the
+worker made is evidence of intent, the object's state is evidence of effect.
 And `report_contains` defaults to `scope: final`, the answer the user receives. `full`
 also matches a phrase the agent merely quoted in progress chatter, which passes a
 required phrase that was never reported and false-fails a forbidden one that only appears
-in quoted material. `worker_commands` is the complement of the `tool_called` limit: it is
-the one check that sees the route a worker took, but only its terminal commands, never
-its MCP tool calls, and only for cards the run delegated — a router that answered without
-delegating leaves it nothing to read, which is `status: "error"`, not a pass. The record
-itself does carry the workers' MCP tool calls, as the tagged trajectory entries above; no
-deterministic check reads them, and the judged metrics receive them as the execution trace.
+in quoted material. `worker_commands` reads the route a worker took through its terminal
+commands, not its MCP tool calls, and only for cards the run delegated — a router that
+answered without delegating leaves it nothing to read, which is `status: "error"`, not a
+pass. `worker_agents` reads only which profile made the workers' tagged entries, and the
+judged metrics receive those entries as the execution trace.
 
-All seven fail closed. A check that cannot observe its subject returns `status: "error"`,
+Every one fails closed. A check that cannot observe its subject returns `status: "error"`,
 never a pass and never a fail, and an errored check drops `VerificationCoverage` below
 1.0, which the gate fails. Silence is not a pass.
 
@@ -328,7 +339,7 @@ statement of the rule; `bench/CUSTOM-TASKS.md`, `bench/CONTRIBUTING.md` and
 `scripts/validate_bench_cases.py` checks all of the above without a cluster, and
 `make bench-case-check` runs it in about a second. It rejects a `task_id:` spelling or an
 id that disagrees with its directory, a `domain:` that is missing or not in
-`domains.yaml`, a `fixtures:` role the fleet catalog does not define, a cluster-reading
+`domains.yaml`, a `fixtures:` role the fleet catalog does not define (outside a `FIXTURE_NOT_READY` case, which names the role its issue plants), a cluster-reading
 case that declares no `fixtures:` at all, a missing, empty or inline `verification_spec`,
 a check that carries no assertion and so can only pass, a missing `owner:` or one written
 as a mention or as something other than a login, an `expected_fail:` that is not a bare YAML
