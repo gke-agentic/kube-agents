@@ -91,8 +91,13 @@ install without the interview.
 
 > [!WARNING]
 > The credential variables (`api_server_key`, `*_api_key`, Slack tokens) are
-> marked `sensitive`, which redacts plan output — but like every secret passed
-> through Terraform they are stored **in plaintext in the Terraform state**.
+> marked `sensitive`, which redacts them where Terraform prints the variables
+> themselves — but not in `helm_release.kube_agents`'s `metadata` attribute,
+> which repeats every chart value and which the helm provider does not mark
+> sensitive. `lifecycle.sh` hides that block from `plan`, `apply` and
+> `destroy`; a raw `terraform plan`, `apply`, `destroy` or `show` prints it.
+> Like every secret passed through Terraform, they are also stored **in
+> plaintext in the Terraform state**.
 > The two generated `SESSION_KV_*` values live in state for the same reason.
 > Keep the state in a protected backend (e.g. a GCS bucket with tight IAM),
 > not on a shared disk or in version control.

@@ -12,12 +12,16 @@ Tests safety guards in lifecycle.sh before terraform apply:
 
 import os
 import pathlib
+import re
+import select
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 import unittest
 
-from tests.testing.common import get_isolated_test_env
+from tests.testing.common import create_minimal_tools_bin, get_isolated_test_env
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _LIFECYCLE_SH = _REPO_ROOT / "terraform" / "examples" / "full-install" / "lifecycle.sh"
@@ -834,6 +838,529 @@ class MissingEndpointHelperTest(unittest.TestCase):
         proc = self._source_without_helper("true")
         self.assertIn("gke_dns_endpoint.sh", proc.stderr)
         self.assertIn("IP endpoint", proc.stderr)
+
+
+# Terraform's own colouring, so the fixtures exercise the escape stripping the
+# filter needs on a real CI stream.
+_ESC = "\x1b"
+_BOLD, _RESET, _YELLOW, _RED = f"{_ESC}[1m", f"{_ESC}[0m", f"{_ESC}[33m", f"{_ESC}[31m"
+
+# Shaped like the helm_release diff CI printed, with fake values. The inner
+# `}` lines sit deeper than metadata's own closing brace, which is what the
+# filter must not stop at.
+_FAKE_KEY = "fake-api-server-key-0123456789"
+_FAKE_PEM = "-----BEGIN OPENSSH PRIVATE KEY-----"
+
+
+def _helm_metadata_block(marker, colour, closing_suffix):
+    # Terraform right-aligns action symbols in three columns ("  ~", "-/+"),
+    # so an attribute name, and the brace that closes it, never move.
+    sym = " " * (3 - len(marker)) + f"{colour}{marker}{_RESET}{_RESET}"
+    return [
+        f"    {sym} metadata                   = {{",
+        f"        {sym} notes          = <<-EOT",
+        "                NOTE: uninstalling needs the finalizer cleared first",
+        f"            EOT{closing_suffix}",
+        f"          {sym} values         = jsonencode(",
+        "              {",
+        "                  credentials = {",
+        "                      data = {",
+        f'                          API_SERVER_KEY          = "{_FAKE_KEY}"',
+        "                          SANDBOX_SSH_PRIVATE_KEY = <<-EOT",
+        f"                              {_FAKE_PEM}",
+        "                          EOT",
+        "                      }",
+        "                  }",
+        "              }",
+        "          )",
+        f"        }}{closing_suffix}",
+    ]
+
+
+_UPDATE_PLAN = "\n".join([
+    "Terraform will perform the following actions:",
+    "",
+    f"{_BOLD}  # helm_release.kube_agents{_RESET} will be updated in-place",
+    f'{_RESET}  {_YELLOW}~{_RESET}{_RESET} resource "helm_release" "kube_agents" {{',
+    f'      {_YELLOW}~{_RESET}{_RESET} id                         = "kube-agents" -> (known after apply)',
+    *_helm_metadata_block("~", _YELLOW, " -> (known after apply)"),
+    f"      {_YELLOW}~{_RESET}{_RESET} values                     = (sensitive value)",
+    "        # (26 unchanged attributes hidden)",
+    "    }",
+    "",
+    f"{_BOLD}Plan:{_RESET} 0 to add, 1 to change, 0 to destroy.",
+]) + "\n"
+
+_DESTROY_PLAN = "\n".join([
+    f"{_BOLD}  # helm_release.kube_agents{_RESET} will be {_BOLD}{_RED}destroyed{_RESET}",
+    f'{_RESET}  {_RED}-{_RESET}{_RESET} resource "helm_release" "kube_agents" {{',
+    *_helm_metadata_block("-", _RED, " -> null"),
+    f'      {_RED}-{_RESET}{_RESET} name                       = "kube-agents" -> null',
+    "    }",
+    "",
+    f"{_BOLD}Plan:{_RESET} 0 to add, 0 to change, 1 to destroy.",
+]) + "\n"
+
+# Real terraform puts the replace symbol on the resource line only, at column
+# 0; the attributes inside carry their own action.
+_REPLACE_PLAN = "\n".join([
+    f'{_RED}-{_RESET}/{_YELLOW}+{_RESET} resource "helm_release" "kube_agents" {{',
+    *_helm_metadata_block("~", _YELLOW, " -> (known after apply)"),
+    '      ~ namespace = "old" -> "new" # forces replacement',
+    "    }",
+]) + "\n"
+
+# google_compute_instance has a metadata map of its own. It is not chart
+# values, and hiding it would hide a real diff from the operator.
+_OTHER_RESOURCE_PLAN = "\n".join([
+    f'{_RESET}  {_YELLOW}~{_RESET}{_RESET} resource "google_compute_instance" "bastion" {{',
+    f"      {_YELLOW}~{_RESET}{_RESET} metadata = {{",
+    '          ~ "enable-oslogin" = "FALSE" -> "TRUE"',
+    "        }",
+    "    }",
+]) + "\n"
+
+# `terraform show` prints attributes with no action symbol at all. This is
+# Terraform 1.9.5 with helm provider 3.3.0 rendering a state that holds these
+# fake values, byte for byte.
+_SHOW_HELM_BODY = [
+    '    chart     = "kube-agents"',
+    '    id        = "kube-agents"',
+    "    metadata  = {",
+    '        app_version    = "0.7.0"',
+    '        chart          = "kube-agents"',
+    "        first_deployed = 1",
+    "        last_deployed  = 2",
+    '        name           = "kube-agents"',
+    '        namespace      = "kubeagents-system"',
+    "        notes          = <<-EOT",
+    "            NOTE: uninstalling needs the finalizer cleared first",
+    "        EOT",
+    "        revision       = 7",
+    "        values         = jsonencode(",
+    "            {",
+    "                credentials = {",
+    "                    data = {",
+    f'                        API_SERVER_KEY          = "{_FAKE_KEY}"',
+    "                        SANDBOX_SSH_PRIVATE_KEY = <<-EOT",
+    f"                            {_FAKE_PEM}",
+    "                            abc",
+    "                        EOT",
+    "                    }",
+    "                }",
+    "            }",
+    "        )",
+    '        version        = "0.7.0"',
+    "    }",
+    '    name      = "kube-agents"',
+    '    namespace = "kubeagents-system"',
+    "    values    = (sensitive value)",
+]
+_SHOW_OUTPUT = "\n".join([
+    "# helm_release.kube_agents:",
+    'resource "helm_release" "kube_agents" {',
+    *_SHOW_HELM_BODY,
+    "}",
+]) + "\n"
+
+# A plan that imports the release has no action to show either, so its body
+# carries no symbol; only the indent differs from `terraform show`.
+_IMPORT_PLAN = "\n".join([
+    "  # helm_release.kube_agents will be imported",
+    '    resource "helm_release" "kube_agents" {',
+    *("    " + line for line in _SHOW_HELM_BODY),
+    "    }",
+    "",
+    "Plan: 1 to import, 0 to add, 0 to change, 0 to destroy.",
+]) + "\n"
+
+_OTHER_RESOURCE_SHOW = "\n".join([
+    "# google_compute_instance.bastion:",
+    'resource "google_compute_instance" "bastion" {',
+    "    metadata  = {",
+    '        "enable-oslogin" = "TRUE"',
+    "    }",
+    "}",
+]) + "\n"
+
+
+def _plain(text):
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
+def _source(call):
+    return f'KUBE_AGENTS_SOURCE_ONLY=true source "{_LIFECYCLE_SH}"\n{call}\n'
+
+
+def _read_until(fd, needle, timeout):
+    """Bytes read from fd until needle shows up or timeout passes."""
+    buf = b""
+    deadline = time.monotonic() + timeout
+    while needle not in buf:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        ready, _, _ = select.select([fd], [], [], left)
+        if not ready:
+            break
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            break
+        buf += chunk
+    return buf
+
+
+class RedactHelmReleaseMetadataTest(unittest.TestCase):
+    """helm_release's metadata repeats every chart value, which may include secrets.
+
+    The helm provider does not mark it sensitive, so a plan that touches the
+    release -- and every destroy -- prints the old values in full. The filter
+    keeps that block out of terraform's output, and so out of any log of it.
+    """
+
+    def _filter(self, text):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = subprocess.run(
+                ["bash", "-c", _source("redact_helm_release_metadata")],
+                input=text,
+                capture_output=True,
+                text=True,
+                env=get_isolated_test_env(bin_dir=tmp),
+                cwd=str(_LIFECYCLE_SH.parent),
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return proc.stdout
+
+    def _assert_hidden(self, out, marker):
+        plain = _plain(out)
+        self.assertNotIn(_FAKE_KEY, plain)
+        self.assertNotIn(_FAKE_PEM, plain)
+        self.assertNotIn("NOTE: uninstalling", plain)
+        self.assertEqual(plain.count("hidden by lifecycle.sh"), 1, plain)
+        self.assertIn(f"    {marker:>3} metadata = (hidden by lifecycle.sh", plain)
+
+    def test_an_update_hides_the_old_values_and_keeps_the_rest_of_the_diff(self):
+        out = self._filter(_UPDATE_PLAN)
+        self._assert_hidden(out, "~")
+        plain = _plain(out)
+        # Everything past metadata's own closing brace is still there, so the
+        # skip ended at that brace and not at one of the nested ones.
+        self.assertIn('id                         = "kube-agents"', plain)
+        self.assertIn("values                     = (sensitive value)", plain)
+        self.assertIn("# (26 unchanged attributes hidden)", plain)
+        self.assertIn("Plan: 0 to add, 1 to change, 0 to destroy.", plain)
+        self.assertNotIn("} -> (known after apply)", plain)
+
+    def test_a_destroy_hides_the_values_it_is_about_to_delete(self):
+        out = self._filter(_DESTROY_PLAN)
+        self._assert_hidden(out, "-")
+        plain = _plain(out)
+        self.assertIn('name                       = "kube-agents" -> null', plain)
+        self.assertIn("Plan: 0 to add, 0 to change, 1 to destroy.", plain)
+
+    def test_a_replacement_hides_them_too(self):
+        out = self._filter(_REPLACE_PLAN)
+        self._assert_hidden(out, "~")
+        self.assertIn("# forces replacement", _plain(out))
+
+    def test_a_replace_symbol_on_the_attribute_itself_is_hidden(self):
+        # Not what terraform prints today; a renderer change must not reopen it.
+        for marker in ("-/+", "+/-"):
+            with self.subTest(marker=marker):
+                header = '  ~ resource "helm_release" "kube_agents" {'
+                block = "\n".join([header, *_helm_metadata_block(marker, _YELLOW, ""), "    }"])
+                self._assert_hidden(self._filter(block + "\n"), marker)
+
+    def test_the_list_form_of_older_providers_is_hidden(self):
+        # helm provider v2 rendered metadata as a list of one object.
+        lines = [
+            '  - resource "helm_release" "kube_agents" {',
+            "      - metadata = [",
+            "          - {",
+            f'              - values = "{_FAKE_KEY}"',
+            "            },",
+            "        ] -> null",
+            '      - name = "kube-agents" -> null',
+            "    }",
+        ]
+        plain = _plain(self._filter("\n".join(lines) + "\n"))
+        self.assertNotIn(_FAKE_KEY, plain)
+        self.assertIn("- metadata = (hidden by lifecycle.sh", plain)
+        self.assertIn('- name = "kube-agents" -> null', plain)
+
+    def test_crlf_line_endings_are_hidden_as_well(self):
+        out = self._filter(_UPDATE_PLAN.replace("\n", "\r\n"))
+        self._assert_hidden(out, "~")
+        self.assertIn("Plan: 0 to add, 1 to change, 0 to destroy.", _plain(out))
+
+    def test_lines_outside_the_block_pass_through_byte_for_byte(self):
+        # Colour included: the filter matches on a stripped copy and prints the
+        # original, so CI keeps its highlighting.
+        out = self._filter(_UPDATE_PLAN)
+        kept = [line for line in _UPDATE_PLAN.splitlines()
+                if line.startswith(f"{_BOLD}  # helm_release") or "(sensitive value)" in line]
+        self.assertEqual(len(kept), 2)
+        for line in kept:
+            self.assertIn(line, out.splitlines())
+
+    def test_another_resource_s_metadata_is_left_alone(self):
+        for text in (_OTHER_RESOURCE_PLAN, _OTHER_RESOURCE_SHOW):
+            with self.subTest(text=text.splitlines()[0]):
+                self.assertEqual(self._filter(text), text)
+
+    def test_terraform_show_prints_the_block_without_a_symbol_and_it_is_hidden(self):
+        # `terraform show` and `terraform state show` render state, where no
+        # attribute carries an action; the block has to be found without one.
+        plain = _plain(self._filter(_SHOW_OUTPUT))
+        self.assertNotIn(_FAKE_KEY, plain)
+        self.assertNotIn(_FAKE_PEM, plain)
+        self.assertNotIn("NOTE: uninstalling", plain)
+        self.assertEqual(plain.count("hidden by lifecycle.sh"), 1, plain)
+        self.assertIn("\n    metadata = (hidden by lifecycle.sh", plain)
+        # The skip ended at metadata's own brace: what follows it is intact.
+        self.assertIn('    name      = "kube-agents"\n', plain)
+        self.assertIn("    values    = (sensitive value)\n}\n", plain)
+
+    def test_an_import_plan_prints_it_without_a_symbol_too(self):
+        plain = _plain(self._filter(_IMPORT_PLAN))
+        self.assertNotIn(_FAKE_KEY, plain)
+        self.assertNotIn(_FAKE_PEM, plain)
+        self.assertEqual(plain.count("hidden by lifecycle.sh"), 1, plain)
+        self.assertIn("\n        metadata = (hidden by lifecycle.sh", plain)
+        self.assertIn('        name      = "kube-agents"\n', plain)
+        self.assertIn("Plan: 1 to import, 0 to add, 0 to change, 0 to destroy.", plain)
+
+    def test_the_helm_state_ends_at_the_next_resource(self):
+        # Only the helm block is hidden; the instance after it keeps its diff.
+        out = _plain(self._filter(_UPDATE_PLAN + _OTHER_RESOURCE_PLAN))
+        self.assertEqual(out.count("hidden by lifecycle.sh"), 1, out)
+        self.assertIn('"enable-oslogin" = "FALSE" -> "TRUE"', out)
+
+    def test_the_helm_state_ends_at_a_data_source_too(self):
+        data = "\n".join([
+            ' <= data "google_compute_instance" "bastion" {',
+            "      + metadata = {",
+            '          + "enable-oslogin" = "TRUE"',
+            "        }",
+            "    }",
+        ]) + "\n"
+        out = _plain(self._filter(_UPDATE_PLAN + data))
+        self.assertEqual(out.count("hidden by lifecycle.sh"), 1, out)
+        self.assertIn('+ "enable-oslogin" = "TRUE"', out)
+
+    def test_a_block_that_never_closes_hides_the_rest_and_says_so(self):
+        # Fails closed: a missing closer must not let the values through.
+        closer = "        } -> (known after apply)"
+        self.assertIn(closer, _UPDATE_PLAN.splitlines())
+        unclosed = _UPDATE_PLAN.replace(closer + "\n", "")
+        plain = _plain(self._filter(unclosed))
+        self.assertNotIn(_FAKE_KEY, plain)
+        self.assertNotIn("Plan: 0 to add", plain)
+        self.assertIn("metadata block never closed", plain.splitlines()[-1])
+
+    def test_the_filter_outlives_ctrl_c_so_terraform_can_shut_down(self):
+        # Ctrl-C reaches the whole process group. Were the filter to die of it,
+        # terraform's graceful-shutdown output would hit a closed pipe and
+        # SIGPIPE would kill it before it saved state and released the lock.
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = subprocess.Popen(
+                ["bash", "-c", _source("redact_helm_release_metadata")],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=get_isolated_test_env(bin_dir=tmp),
+                cwd=str(_LIFECYCLE_SH.parent),
+                start_new_session=True,
+            )
+            try:
+                proc.stdin.write(b"applying\n")
+                proc.stdin.flush()
+                self.assertIn(b"applying", _read_until(proc.stdout.fileno(), b"applying", 10))
+                os.killpg(proc.pid, signal.SIGINT)
+                time.sleep(0.5)
+                self.assertIsNone(proc.poll(), "the filter died of SIGINT")
+                proc.stdin.write(b"Interrupt received. Gracefully shutting down...\n")
+                proc.stdin.close()
+                rest = proc.stdout.read()
+                self.assertEqual(proc.wait(timeout=10), 0, proc.stderr.read())
+                self.assertIn(b"Gracefully shutting down", rest)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+                proc.stdout.close()
+                proc.stderr.close()
+
+    def test_each_line_streams_before_the_next_arrives_on_every_awk_present(self):
+        # A helm wait runs ten minutes; a filter that buffers makes CI look
+        # hung. mawk buffers its input despite fflush() and needs -W interactive.
+        variants = {
+            "gawk": ["gawk"],
+            "mawk": ["mawk"],
+            "original-awk": ["original-awk"],
+            "busybox": ["busybox", "awk"],
+        }
+        tested = 0
+        for name, cmd in variants.items():
+            if not shutil.which(cmd[0]):
+                continue
+            tested += 1
+            with self.subTest(awk=name), tempfile.TemporaryDirectory() as tmp:
+                awk = pathlib.Path(tmp) / "awk"
+                awk.write_text(f'#!/bin/sh\nexec {" ".join(cmd)} "$@"\n')
+                awk.chmod(0o755)
+                proc = subprocess.Popen(
+                    ["bash", "-c", _source("redact_helm_release_metadata")],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=get_isolated_test_env(bin_dir=tmp),
+                    cwd=str(_LIFECYCLE_SH.parent),
+                )
+                try:
+                    proc.stdin.write(b"Still creating... [10m0s elapsed]\n")
+                    proc.stdin.flush()
+                    # The pipe stays open: the line has to come out on its own.
+                    got = _read_until(proc.stdout.fileno(), b"elapsed]", 5)
+                    self.assertIn(b"elapsed]", got, f"{name} held the line back")
+                finally:
+                    proc.stdin.close()
+                    proc.wait(timeout=10)
+                    proc.stdout.close()
+                    proc.stderr.close()
+        self.assertGreater(tested, 0, "no awk found to test")
+
+
+# The shared basic tools, plus the few lifecycle.sh also calls. Nothing else
+# from the host is on PATH, so a real terraform, gcloud or kubectl cannot be
+# reached even by accident.
+_SANDBOX_EXTRA_TOOLS = ("env", "uniq", "wc")
+
+
+class LifecycleSubcommandFilterTest(unittest.TestCase):
+    """Each subcommand, run as a command, gets the filter it claims to.
+
+    The filter tests above prove the function; these prove the wiring -- that
+    plan, apply and destroy actually pipe through it and keep terraform's
+    exit code. Each run uses a copy of the script in a scratch tree, a PATH of
+    basic tools plus stubs, and an environment with nothing from the host.
+    Nothing in the checkout is read or written beyond that copy.
+    """
+
+    def _sandbox(self, root, output, tf_rc):
+        """A scratch tree with lifecycle.sh, and a PATH of basic tools and stubs.
+
+        terraform prints `output` for plan/apply/destroy and exits `tf_rc`.
+        Returns the composition directory, the environment, and the file
+        every stub call is logged to.
+        """
+        comp = root / "terraform" / "examples" / "full-install"
+        comp.mkdir(parents=True)
+        shutil.copy(_LIFECYCLE_SH, comp / "lifecycle.sh")
+        shutil.copy(_REPO_ROOT / "install.defaults.env", root / "install.defaults.env")
+        helpers = root / "scripts" / "installer"
+        helpers.mkdir(parents=True)
+        shutil.copy(_REPO_ROOT / "scripts" / "installer" / "gke_dns_endpoint.sh", helpers)
+        bin_dir = create_minimal_tools_bin(root)
+        for tool in _SANDBOX_EXTRA_TOOLS:
+            path = shutil.which(tool)
+            if path and not (bin_dir / tool).exists():
+                (bin_dir / tool).symlink_to(path)
+        fixture = root / "terraform-output.txt"
+        fixture.write_text(output)
+        calls = root / "calls"
+        bash = shutil.which("bash")
+        # An empty state, and a console that answers null: every guard and
+        # adoption step stands down, and the run reaches terraform itself.
+        (bin_dir / "terraform").write_text(
+            f"#!{bash}\n"
+            f'echo "terraform $*" >> "{calls}"\n'
+            'case "$1" in\n'
+            "  state) exit 0 ;;\n"
+            "  console) read -r _; echo null; exit 0 ;;\n"
+                f'  plan|apply|destroy) cat "{fixture}"; exit {tf_rc} ;;\n'
+            "esac\n"
+            "exit 0\n"
+        )
+        # gcloud and kubectl answer "not found": the cluster is unreachable,
+        # there is no backup plan, no key ring to adopt.
+        for tool in ("gcloud", "kubectl"):
+            (bin_dir / tool).write_text(f'#!{bash}\necho "{tool} $*" >> "{calls}"\nexit 1\n')
+        for stub in ("terraform", "gcloud", "kubectl"):
+            (bin_dir / stub).chmod(0o755)
+        return comp, {"PATH": str(bin_dir), "HOME": str(root)}, calls
+
+    def _run_lifecycle(self, args, output="", tf_rc=0):
+        """Run lifecycle.sh with terraform printing `output` for plan/apply/destroy.
+
+        Returns the completed process and every stub call, one per line.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            comp, env, calls = self._sandbox(pathlib.Path(tmp), output, tf_rc)
+            proc = subprocess.run(
+                [shutil.which("bash"), str(comp / "lifecycle.sh"), *args],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=str(comp),
+                timeout=60,
+            )
+            return proc, calls.read_text() if calls.exists() else ""
+
+    def _terraform_call(self, calls, subcommand):
+        calls_of = [line.split() for line in calls.splitlines()]
+        matches = [call for call in calls_of if call[:2] == ["terraform", subcommand]]
+        self.assertEqual(len(matches), 1, calls)
+        return matches[0]
+
+    def _assert_hidden(self, out, marker):
+        RedactHelmReleaseMetadataTest._assert_hidden(self, out, marker)
+
+    def test_plan_keeps_the_detailed_exit_code_through_the_filter(self):
+        # upgrade.sh reads exit 2 as "changes pending". A pipe without pipefail
+        # would report the filter's 0 instead, and the plan would read as clean.
+        proc, calls = self._run_lifecycle(["plan", "-detailed-exitcode"], _UPDATE_PLAN, tf_rc=2)
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertIn("-detailed-exitcode", self._terraform_call(calls, "plan"))
+        self._assert_hidden(proc.stdout, "~")
+
+    def test_apply_is_filtered(self):
+        proc, calls = self._run_lifecycle(["apply", "-auto-approve"], _UPDATE_PLAN)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self._assert_hidden(proc.stdout, "~")
+        self.assertIn("-auto-approve", self._terraform_call(calls, "apply"))
+
+    def test_a_failed_apply_fails_the_script(self):
+        proc, _ = self._run_lifecycle(["apply", "-auto-approve"], _UPDATE_PLAN, tf_rc=1)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertNotIn(_FAKE_KEY, proc.stdout)
+
+    def test_destroy_is_filtered(self):
+        proc, calls = self._run_lifecycle(["destroy", "-auto-approve"], _DESTROY_PLAN)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self._assert_hidden(proc.stdout, "-")
+        call = self._terraform_call(calls, "destroy")
+        self.assertIn("-var=deletion_protection=false", call)
+        self.assertIn("-auto-approve", call)
+        self.assertIn("done. The KMS key rings remain", proc.stdout)
+
+    def test_a_failed_destroy_stops_before_reporting_done(self):
+        proc, _ = self._run_lifecycle(["destroy", "-auto-approve"], _DESTROY_PLAN, tf_rc=1)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertNotIn(_FAKE_KEY, proc.stdout)
+        self.assertNotIn("done. The KMS key rings remain", proc.stdout)
+
+    def test_usage_prints_the_whole_header_and_no_code(self):
+        # The usage arm prints a fixed line range of this file; the header grew
+        # with the redaction paragraph, so the range has to follow it.
+        proc, _ = self._run_lifecycle([])
+        self.assertEqual(proc.returncode, 1)
+        lines = [line for line in proc.stdout.splitlines() if line.strip()]
+        self.assertTrue(lines[0].startswith("Makes `apply` and `destroy` repeatable"), lines[:1])
+        self.assertIn("`plan`, `apply` and `destroy` hide helm_release's `metadata` block", proc.stdout)
+        self.assertEqual(lines[-1], "default kube-agents/<cluster_name>>. Unset, state stays local as before.")
+        self.assertNotIn("set -euo pipefail", proc.stdout)
 
 
 if __name__ == "__main__":
