@@ -95,7 +95,9 @@ install without the interview.
 > themselves — but not in `helm_release.kube_agents`'s `metadata` attribute,
 > which repeats every chart value and which the helm provider does not mark
 > sensitive. `lifecycle.sh` hides that block from `plan`, `apply` and
-> `destroy`; a raw `terraform plan`, `apply`, `destroy` or `show` prints it.
+> `destroy`, except for an `apply` that will ask for approval at a terminal, so
+> that its prompt shows; a raw `terraform plan`, `apply`, `destroy` or `show`
+> prints it.
 > Like every secret passed through Terraform, they are also stored **in
 > plaintext in the Terraform state**.
 > The two generated `SESSION_KV_*` values live in state for the same reason.

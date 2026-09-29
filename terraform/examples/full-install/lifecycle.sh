@@ -54,10 +54,10 @@
 # no state bucket creation, no adoption imports. Pass -detailed-exitcode to get
 # 0 for "in sync" and 2 for "there are changes".
 #
-# `plan`, `apply` and `destroy` hide helm_release's `metadata` block from
-# Terraform's output: it repeats every chart value, which may contain
-# secrets, and the provider does not mark it sensitive. A raw `terraform`
-# run on this composition still prints it.
+# `plan`, `apply` and `destroy` hide helm_release's `metadata` block, which
+# may contain secrets, from Terraform's output; an `apply` that will ask for
+# approval at a terminal is left as is, so its prompt shows. A raw
+# `terraform` run on this composition prints the block.
 #
 # Remote state (opt-in): set KUBE_AGENTS_STATE_BUCKET to a GCS bucket name, or
 # to "auto" for <project_id>-kube-agents-tfstate. On `apply` and `destroy` the
@@ -998,8 +998,8 @@ forget_kms() {
 # matched with or without a diff symbol before it: `terraform show`, and a
 # plan that imports the release, print it with none. Everything else passes
 # through unchanged. Colour codes and a trailing CR are stripped only for
-# matching, never from what is printed. Machine-readable output (`-json`) is
-# not this filter's to parse.
+# matching; every line that passes through is printed as received.
+# Machine-readable output (`-json`) is not this filter's to parse.
 #
 # It fails closed: a block whose closing bracket never comes hides the rest of
 # the output, and says so at the end, rather than guess where the values stop.
@@ -1115,11 +1115,19 @@ case "${1:-}" in
     adopt_pubsub
     log "terraform apply"
     # No -input=false: this prompts like plain `terraform apply` does. Pass
-    # -auto-approve through ARGS for unattended runs. Filtered like plan;
-    # Terraform's approval question prints as whole lines and reads through
-    # the filter, and only its closing "Enter a value: ", which has no
-    # newline, shows once the answer is typed.
-    terraform apply "$@" | redact_helm_release_metadata
+    # -auto-approve through ARGS for unattended runs.
+    #
+    # Only an apply that is about to ask someone at a terminal runs unfiltered:
+    # a terminal on stdin and stdout, and no approval given here or in
+    # TF_CLI_ARGS_apply. Its closing "Enter a value: " has no newline and would
+    # wait in the line-based filter until answered. Everything else is
+    # filtered: an approved apply (upgrade.sh passes -auto-approve) prints the
+    # whole diff without asking, and a pipe (`| tee`), a file or CI is a log.
+    if [[ -t 0 && -t 1 && " $* ${TF_CLI_ARGS_apply:-} " != *auto-approve* ]]; then
+      terraform apply "$@"
+    else
+      terraform apply "$@" | redact_helm_release_metadata
+    fi
     ;;
   destroy)
     shift

@@ -12,6 +12,7 @@ Tests safety guards in lifecycle.sh before terraform apply:
 
 import os
 import pathlib
+import pty
 import re
 import select
 import shutil
@@ -1003,7 +1004,11 @@ def _read_until(fd, needle, timeout):
         ready, _, _ = select.select([fd], [], [], left)
         if not ready:
             break
-        chunk = os.read(fd, 4096)
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError:
+            # A terminal whose other side has closed reads as EIO on Linux.
+            break
         if not chunk:
             break
         buf += chunk
@@ -1019,15 +1024,15 @@ class RedactHelmReleaseMetadataTest(unittest.TestCase):
     """
 
     def _filter(self, text):
-        with tempfile.TemporaryDirectory() as tmp:
-            proc = subprocess.run(
-                ["bash", "-c", _source("redact_helm_release_metadata")],
-                input=text,
-                capture_output=True,
-                text=True,
-                env=get_isolated_test_env(bin_dir=tmp),
-                cwd=str(_LIFECYCLE_SH.parent),
-            )
+        proc = subprocess.run(
+            ["bash", "-c", _source("redact_helm_release_metadata")],
+            input=text,
+            capture_output=True,
+            text=True,
+            env=get_isolated_test_env(),
+            cwd=str(_LIFECYCLE_SH.parent),
+            timeout=60,
+        )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return proc.stdout
 
@@ -1162,34 +1167,33 @@ class RedactHelmReleaseMetadataTest(unittest.TestCase):
         # Ctrl-C reaches the whole process group. Were the filter to die of it,
         # terraform's graceful-shutdown output would hit a closed pipe and
         # SIGPIPE would kill it before it saved state and released the lock.
-        with tempfile.TemporaryDirectory() as tmp:
-            proc = subprocess.Popen(
-                ["bash", "-c", _source("redact_helm_release_metadata")],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=get_isolated_test_env(bin_dir=tmp),
-                cwd=str(_LIFECYCLE_SH.parent),
-                start_new_session=True,
-            )
-            try:
-                proc.stdin.write(b"applying\n")
-                proc.stdin.flush()
-                self.assertIn(b"applying", _read_until(proc.stdout.fileno(), b"applying", 10))
-                os.killpg(proc.pid, signal.SIGINT)
-                time.sleep(0.5)
-                self.assertIsNone(proc.poll(), "the filter died of SIGINT")
-                proc.stdin.write(b"Interrupt received. Gracefully shutting down...\n")
-                proc.stdin.close()
-                rest = proc.stdout.read()
-                self.assertEqual(proc.wait(timeout=10), 0, proc.stderr.read())
-                self.assertIn(b"Gracefully shutting down", rest)
-            finally:
-                if proc.poll() is None:
-                    proc.kill()
-                    proc.wait()
-                proc.stdout.close()
-                proc.stderr.close()
+        proc = subprocess.Popen(
+            ["bash", "-c", _source("redact_helm_release_metadata")],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=get_isolated_test_env(),
+            cwd=str(_LIFECYCLE_SH.parent),
+            start_new_session=True,
+        )
+        try:
+            proc.stdin.write(b"applying\n")
+            proc.stdin.flush()
+            self.assertIn(b"applying", _read_until(proc.stdout.fileno(), b"applying", 10))
+            os.killpg(proc.pid, signal.SIGINT)
+            time.sleep(0.5)
+            self.assertIsNone(proc.poll(), "the filter died of SIGINT")
+            proc.stdin.write(b"Interrupt received. Gracefully shutting down...\n")
+            proc.stdin.close()
+            rest = proc.stdout.read()
+            self.assertEqual(proc.wait(timeout=10), 0, proc.stderr.read())
+            self.assertIn(b"Gracefully shutting down", rest)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            proc.stdout.close()
+            proc.stderr.close()
 
     def test_each_line_streams_before_the_next_arrives_on_every_awk_present(self):
         # A helm wait runs ten minutes; a filter that buffers makes CI look
@@ -1231,12 +1235,6 @@ class RedactHelmReleaseMetadataTest(unittest.TestCase):
         self.assertGreater(tested, 0, "no awk found to test")
 
 
-# The shared basic tools, plus the few lifecycle.sh also calls. Nothing else
-# from the host is on PATH, so a real terraform, gcloud or kubectl cannot be
-# reached even by accident.
-_SANDBOX_EXTRA_TOOLS = ("env", "uniq", "wc")
-
-
 class LifecycleSubcommandFilterTest(unittest.TestCase):
     """Each subcommand, run as a command, gets the filter it claims to.
 
@@ -1250,7 +1248,9 @@ class LifecycleSubcommandFilterTest(unittest.TestCase):
     def _sandbox(self, root, output, tf_rc):
         """A scratch tree with lifecycle.sh, and a PATH of basic tools and stubs.
 
-        terraform prints `output` for plan/apply/destroy and exits `tf_rc`.
+        terraform prints `output` for plan/apply/destroy and exits `tf_rc`; an
+        apply without -auto-approve first asks, as terraform does, and applies
+        only on "yes".
         Returns the composition directory, the environment, and the file
         every stub call is logged to.
         """
@@ -1262,10 +1262,6 @@ class LifecycleSubcommandFilterTest(unittest.TestCase):
         helpers.mkdir(parents=True)
         shutil.copy(_REPO_ROOT / "scripts" / "installer" / "gke_dns_endpoint.sh", helpers)
         bin_dir = create_minimal_tools_bin(root)
-        for tool in _SANDBOX_EXTRA_TOOLS:
-            path = shutil.which(tool)
-            if path and not (bin_dir / tool).exists():
-                (bin_dir / tool).symlink_to(path)
         fixture = root / "terraform-output.txt"
         fixture.write_text(output)
         calls = root / "calls"
@@ -1278,7 +1274,11 @@ class LifecycleSubcommandFilterTest(unittest.TestCase):
             'case "$1" in\n'
             "  state) exit 0 ;;\n"
             "  console) read -r _; echo null; exit 0 ;;\n"
-                f'  plan|apply|destroy) cat "{fixture}"; exit {tf_rc} ;;\n'
+            f'  plan|destroy) cat "{fixture}"; exit {tf_rc} ;;\n'
+            f'  apply) cat "{fixture}"\n'
+            f'    case " $* ${{TF_CLI_ARGS_apply:-}} " in *" -auto-approve "*) exit {tf_rc} ;; esac\n'
+            "    printf '  Enter a value: '; read -r answer\n"
+            f'    [ "$answer" = yes ] && exit {tf_rc}; exit 1 ;;\n'
             "esac\n"
             "exit 0\n"
         )
@@ -1330,6 +1330,93 @@ class LifecycleSubcommandFilterTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self._assert_hidden(proc.stdout, "~")
         self.assertIn("-auto-approve", self._terraform_call(calls, "apply"))
+
+    def _run_with_a_terminal(self, args, stdin_is_terminal=True, answer=None, extra_env=None):
+        """Run lifecycle.sh with stdout and stderr on a terminal.
+
+        With `answer`, returns what printed before it was typed; without one,
+        everything printed. Also returns the exit code.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            comp, env, _ = self._sandbox(pathlib.Path(tmp), _UPDATE_PLAN, 0)
+            env.update(extra_env or {})
+            master, slave = pty.openpty()
+            proc = None
+            try:
+                proc = subprocess.Popen(
+                    [shutil.which("bash"), str(comp / "lifecycle.sh"), *args],
+                    stdin=slave if stdin_is_terminal else subprocess.DEVNULL,
+                    stdout=slave,
+                    stderr=slave,
+                    env=env,
+                    cwd=str(comp),
+                )
+                os.close(slave)
+                slave = None
+                if answer is None:
+                    out = _read_until(master, b"\0", 30)
+                else:
+                    out = _read_until(master, b"Enter a value: ", 10)
+                    os.write(master, answer.encode() + b"\n")
+                rc = proc.wait(timeout=30)
+            finally:
+                if proc is not None and proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+                for fd in (master, slave):
+                    if fd is not None:
+                        os.close(fd)
+        return out.decode(errors="replace"), rc
+
+    def test_an_apply_that_will_ask_at_a_terminal_is_left_as_is_so_its_prompt_shows(self):
+        # Terraform's closing "Enter a value: " has no newline: through the
+        # line-based filter it would wait unseen until the answer was typed.
+        before, rc = self._run_with_a_terminal(["apply"], answer="yes")
+        self.assertIn("Enter a value: ", before)
+        self.assertEqual(rc, 0, before)
+
+    def test_an_approved_apply_at_a_terminal_is_still_filtered(self):
+        # upgrade.sh passes -auto-approve: nothing will be asked, and the whole
+        # diff prints, so there is nothing to leave unfiltered for.
+        for args, extra_env in (
+            (["apply", "-auto-approve"], {}),
+            (["apply"], {"TF_CLI_ARGS_apply": "-auto-approve"}),
+        ):
+            with self.subTest(args=args, extra_env=extra_env):
+                out, rc = self._run_with_a_terminal(args, extra_env=extra_env)
+                self.assertEqual(rc, 0, out)
+                self._assert_hidden(out, "~")
+
+    def test_an_apply_with_no_terminal_to_answer_from_is_filtered(self):
+        # stdout on a terminal but stdin not (a pty in CI): no one can answer,
+        # so terraform's question ends the run, and the diff before it is a log.
+        out, rc = self._run_with_a_terminal(["apply"], stdin_is_terminal=False)
+        self.assertEqual(rc, 1, out)
+        self._assert_hidden(out, "~")
+
+    def test_an_apply_piped_from_a_terminal_is_still_filtered(self):
+        # `./lifecycle.sh apply | tee apply.log`: a terminal on stdin says
+        # nothing about stdout, which here is a log.
+        with tempfile.TemporaryDirectory() as tmp:
+            comp, env, _ = self._sandbox(pathlib.Path(tmp), _UPDATE_PLAN, 0)
+            master, slave = pty.openpty()
+            try:
+                # Typed ahead: the terminal holds the answer until it is read.
+                os.write(master, b"yes\n")
+                proc = subprocess.run(
+                    [shutil.which("bash"), str(comp / "lifecycle.sh"), "apply"],
+                    stdin=slave,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    cwd=str(comp),
+                    timeout=60,
+                )
+            finally:
+                os.close(master)
+                os.close(slave)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self._assert_hidden(proc.stdout, "~")
 
     def test_a_failed_apply_fails_the_script(self):
         proc, _ = self._run_lifecycle(["apply", "-auto-approve"], _UPDATE_PLAN, tf_rc=1)
