@@ -205,8 +205,10 @@ An agent given that prompt, or reading this file on its own, follows these steps
    gcloud container clusters list --project="YOUR_GCP_PROJECT_ID"
    ```
 
-3. Run the dry run with the confirmed values from a directory that is not a kube-agents checkout.
-   Run from a checkout, the installer uses that checkout's sources, and a real run refuses one that
+3. Run the dry run with the confirmed values from a directory that is not a kube-agents checkout
+   and holds no `install.env`; the installer would load one found there in place of
+   `$HOME/kube-agents/install.env`. Run from a checkout, the installer uses that checkout's
+   sources, and a real run refuses one that
    is not at `<RELEASE_VERSION>`; do not pass `--allow-unverified-source` to get past that. Run from
    elsewhere, it clones to, or reuses, `$HOME/kube-agents` (see Install Sources under
    [Method 0](#method-0-zero-friction-one-liner-installation-fastest)), and a real run refuses a
