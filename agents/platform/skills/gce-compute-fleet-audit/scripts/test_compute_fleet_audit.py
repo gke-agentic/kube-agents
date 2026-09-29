@@ -97,6 +97,8 @@ class ProjectResolutionTest(unittest.TestCase):
         def fake_run(cmd, **kwargs):
             if "projects" in cmd and "list" in cmd:
                 return (1, "", "ERROR: PERMISSION_DENIED resourcemanager.projects.list")
+            if "config" in cmd:
+                return (0, "", "")
             return (0, "[]", "")
 
         errors: list[str] = []
@@ -112,6 +114,80 @@ class ProjectResolutionTest(unittest.TestCase):
             with patch.dict(os.environ, env, clear=False), \
                     patch.object(compute_fleet_audit, "run_cmd", side_effect=fake_run), \
                     patch.object(sys, "argv", ["compute_fleet_audit.py", "--output", out]), \
+                    patch("sys.stdout", new_callable=io.StringIO), \
+                    patch("sys.stderr", new_callable=io.StringIO):
+                compute_fleet_audit.main()
+            with open(out, encoding="utf-8") as f:
+                doc = json.load(f)
+        self.assertIn("project/UNENUMERATED_PROJECTS", [t["cluster"] for t in doc["scope"]["skipped"]])
+
+    def test_blank_monitored_projects_runs_discovery(self):
+        env = {
+            compute_fleet_audit.MONITORED_PROJECTS_ENV: " , ",
+            "GCP_PROJECT_ID": "p-host",
+            "GKE_PROJECT_ID": "",
+            "PROJECT_ID": "",
+        }
+
+        def fake_run(cmd, **kwargs):
+            if "projects" in cmd and "list" in cmd:
+                return (0, "p-host\np-extra\n", "")
+            return (0, "", "")
+
+        errors: list[str] = []
+        with patch.dict(os.environ, env, clear=False), patch.object(
+            compute_fleet_audit, "run_cmd", side_effect=fake_run
+        ):
+            self.assertEqual(compute_fleet_audit.get_target_projects(None, errors), ["p-extra", "p-host"])
+        self.assertEqual(errors, [])
+
+    def test_config_project_is_unioned_even_when_env_names_one(self):
+        env = {
+            compute_fleet_audit.MONITORED_PROJECTS_ENV: "",
+            "GCP_PROJECT_ID": "p-env",
+            "GKE_PROJECT_ID": "",
+            "PROJECT_ID": "",
+        }
+
+        def fake_run(cmd, **kwargs):
+            if "projects" in cmd and "list" in cmd:
+                return (0, "p-env\np-config\n", "")
+            if "config" in cmd:
+                return (0, "p-config\n", "")
+            return (0, "", "")
+
+        errors: list[str] = []
+        with patch.dict(os.environ, env, clear=False), patch.object(
+            compute_fleet_audit, "run_cmd", side_effect=fake_run
+        ) as run:
+            self.assertEqual(compute_fleet_audit.get_target_projects(None, errors), ["p-config", "p-env"])
+        self.assertIn(list(compute_fleet_audit.CONFIG_PROJECT_CMD), [c.args[0] for c in run.call_args_list])
+        self.assertEqual(errors, [])
+
+    def test_narrowed_runs_are_reported_so_other_projects_are_not_resolved(self):
+        with patch.dict(os.environ, {compute_fleet_audit.MONITORED_PROJECTS_ENV: ""}):
+            errors: list[str] = []
+            self.assertEqual(compute_fleet_audit.get_target_projects("cli-proj", errors), ["cli-proj"])
+            self.assertEqual(len(errors), 1)
+            self.assertIn("--project-id", errors[0])
+        env = {
+            compute_fleet_audit.MONITORED_PROJECTS_ENV: "m1,m2",
+            "GCP_PROJECT_ID": "",
+            "GKE_PROJECT_ID": "",
+            "PROJECT_ID": "",
+        }
+        with patch.dict(os.environ, env, clear=False), patch.object(compute_fleet_audit, "run_cmd") as run:
+            errors = []
+            self.assertEqual(compute_fleet_audit.get_target_projects(None, errors), ["m1", "m2"])
+            run.assert_not_called()
+        self.assertEqual(len(errors), 1)
+        self.assertIn(compute_fleet_audit.MONITORED_PROJECTS_ENV, errors[0])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = os.path.join(tmpdir, "findings.json")
+            with patch.object(compute_fleet_audit, "run_gcloud_json", return_value=[]), \
+                    patch.object(compute_fleet_audit, "run_cmd", return_value=(0, "", "")), \
+                    patch.object(sys, "argv", ["compute_fleet_audit.py", "--project-id", "cli-proj", "--output", out]), \
                     patch("sys.stdout", new_callable=io.StringIO), \
                     patch("sys.stderr", new_callable=io.StringIO):
                 compute_fleet_audit.main()

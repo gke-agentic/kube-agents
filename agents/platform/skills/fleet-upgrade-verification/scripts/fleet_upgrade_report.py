@@ -273,22 +273,20 @@ def get_target_projects(cli_projects: list[str] | None = None, listing_errors: l
     if cli_projects:
         return sorted(set(p.strip() for p in cli_projects if p.strip()))
 
-    projects = set()
-    monitored = os.environ.get(MONITORED_PROJECTS_ENV, "")
-    if monitored:
-        for p in monitored.replace(",", " ").split():
-            p = p.strip()
-            if p:
-                projects.add(p)
+    # Parsed before it is tested, so a blank or separator-only value reads as
+    # unset rather than as an override that names nothing and skips discovery.
+    monitored = set(os.environ.get(MONITORED_PROJECTS_ENV, "").replace(",", " ").split())
+    projects = set(monitored)
     for env_var in PROJECT_ENV_VARS:
         val = os.environ.get(env_var, "").strip()
         if val:
             projects.add(val)
-    if not projects:
+    if not monitored:
+        # The host project is always in a discovered scope, whether or not a
+        # `GCP_PROJECT_ID`-style variable also names one.
         rc, stdout, _ = run_cmd(list(CONFIG_PROJECT_CMD))
         if rc == 0 and stdout.strip():
             projects.add(stdout.strip())
-    if not monitored:
         rc, stdout, stderr = run_cmd(list(PROJECTS_LIST_CMD))
         if rc != 0 and listing_errors is not None:
             listing_errors.append(

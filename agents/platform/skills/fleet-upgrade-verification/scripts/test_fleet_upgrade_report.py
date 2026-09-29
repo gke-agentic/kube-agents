@@ -371,6 +371,17 @@ class ProjectResolutionTest(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("did not name p-host", errors[0])
 
+    def test_blank_monitored_projects_runs_discovery(self):
+        env = {report.MONITORED_PROJECTS_ENV: " , ", "GCP_PROJECT_ID": "p-host", "GKE_PROJECT_ID": "", "PROJECT_ID": ""}
+        def fake_run(cmd, **kwargs):
+            if "projects" in cmd and "list" in cmd:
+                return (0, "p-host\np-extra\n", "")
+            return (0, "", "")
+        errors: list[str] = []
+        with patch.dict(os.environ, env, clear=False), patch.object(report, "run_cmd", side_effect=fake_run):
+            self.assertEqual(report.get_target_projects(None, errors), ["p-extra", "p-host"])
+        self.assertEqual(errors, [])
+
 
 class OutputShapeTest(unittest.TestCase):
     def setUp(self):
@@ -434,6 +445,8 @@ class OutputShapeTest(unittest.TestCase):
         def fake_run(cmd, **kwargs):
             if "projects" in cmd and "list" in cmd:
                 return (1, "", "ERROR: PERMISSION_DENIED resourcemanager.projects.list")
+            if "config" in cmd:
+                return (0, "p1\n", "")
             return self.fake(cmd, **kwargs)
 
         env = {report.MONITORED_PROJECTS_ENV: "", "GCP_PROJECT_ID": "p1", "GKE_PROJECT_ID": "", "PROJECT_ID": ""}

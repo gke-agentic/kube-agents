@@ -28,6 +28,15 @@ UNKNOWN_PROJECT = "unknown"
 # unknown and the run must read as partial rather than as a full sweep. Same
 # name fleet_drift.py uses, so every stream reports it alike.
 UNENUMERATED_PROJECTS = "UNENUMERATED_PROJECTS"
+# A run narrowed on purpose -- `--project-id` or `MONITORED_PROJECT_IDS` --
+# skips discovery, so it reads the named projects and no other. Without a row
+# saying so the document reads as the whole fleet, and `finish` resolves every
+# ledger finding on a project the run never looked at. fleet_drift.py records
+# the same `project/UNENUMERATED_PROJECTS` row for its `--project` runs.
+SCOPED_RUN_NOTE = (
+    "scope narrowed to {projects} by {source}: discovery was skipped, so no other project "
+    "in this fleet was named or read"
+)
 ERROR_EXCERPT_CHARS = 300
 API_DISABLED = "API_DISABLED"
 API_DISABLED_MARKERS = (
@@ -67,51 +76,60 @@ def run_gcloud_json(cmd: list[str]) -> list[dict] | dict | str | None:
 def get_target_projects(cli_project: str | None = None, listing_errors: list[str] | None = None) -> list[str]:
     """Resolves all target GCP projects to audit.
 
-    A failed `gcloud projects list` is appended to `listing_errors` when the
-    caller passes one: the scope then holds only the env/config project, and a
-    caller that dropped the error would publish that narrowed sweep as the
-    whole fleet. A listing that succeeds without naming the configured project
-    is appended too: it is filtered rather than complete, as fleet_drift.py
-    treats it.
+    Everything that narrows or loses part of the fleet is appended to
+    `listing_errors` when the caller passes one, and `main` turns each entry
+    into a `project/UNENUMERATED_PROJECTS` skipped target so the run reads as
+    partial rather than as the whole fleet:
+
+    - `--project-id` or a non-empty `MONITORED_PROJECT_IDS` narrows the scope
+      on purpose and skips discovery;
+    - a failed `gcloud projects list` leaves only the env/config project;
+    - a listing that succeeds without naming the configured project is
+      filtered rather than complete, as fleet_drift.py treats it.
+
+    The host project from `gcloud config get-value project` is always part of
+    the discovered scope, alongside any `GCP_PROJECT_ID`-style variable.
     """
-    if cli_project:
-        return [cli_project.strip()]
+    if cli_project and cli_project.strip():
+        project = cli_project.strip()
+        if listing_errors is not None:
+            listing_errors.append(SCOPED_RUN_NOTE.format(projects=project, source="`--project-id`"))
+        return [project]
 
-    projects = set()
-    monitored = os.environ.get(MONITORED_PROJECTS_ENV, "")
+    env_projects = {os.environ.get(var, "").strip() for var in PROJECT_ENV_VARS} - {""}
+    # Parsed before it is tested, so a blank or separator-only value reads as
+    # unset rather than as an override that names nothing and skips discovery.
+    monitored = set(os.environ.get(MONITORED_PROJECTS_ENV, "").replace(",", " ").split())
     if monitored:
-        for p in monitored.replace(",", " ").split():
-            p = p.strip()
-            if p:
-                projects.add(p)
-
-    for env_var in PROJECT_ENV_VARS:
-        val = os.environ.get(env_var, "").strip()
-        if val:
-            projects.add(val)
-
-    if not projects:
-        rc, stdout, _ = run_cmd(list(CONFIG_PROJECT_CMD))
-        if rc == 0 and stdout.strip():
-            projects.add(stdout.strip())
-
-    if not monitored:
-        rc, stdout, stderr = run_cmd(list(PROJECTS_LIST_CMD))
-        if rc != 0 and listing_errors is not None:
+        projects = monitored | env_projects
+        if listing_errors is not None:
             listing_errors.append(
-                f"`gcloud projects list` rc={rc}: {(stderr or '').strip()[:ERROR_EXCERPT_CHARS] or 'no stderr'}; "
-                "the scope fell back to the configured project"
+                SCOPED_RUN_NOTE.format(projects=", ".join(sorted(projects)), source=f"`{MONITORED_PROJECTS_ENV}`")
             )
-        if rc == 0:
-            listed = {line.strip() for line in stdout.splitlines() if line.strip()}
-            omitted = sorted(projects - listed)
-            if omitted and listing_errors is not None:
-                listing_errors.append(
-                    f"`gcloud projects list` rc=0 did not name {', '.join(omitted)}, so the listing is filtered"
-                )
-            projects |= listed
+        return sorted(projects)
 
-    return sorted(list(projects))
+    projects = set(env_projects)
+    rc, stdout, _ = run_cmd(list(CONFIG_PROJECT_CMD))
+    if rc == 0 and stdout.strip():
+        projects.add(stdout.strip())
+
+    rc, stdout, stderr = run_cmd(list(PROJECTS_LIST_CMD))
+    if rc != 0 and listing_errors is not None:
+        listing_errors.append(
+            f"`gcloud projects list` rc={rc}: {(stderr or '').strip()[:ERROR_EXCERPT_CHARS] or 'no stderr'}; "
+            "the scope fell back to the configured project"
+        )
+    if rc == 0:
+        listed = {line.strip() for line in stdout.splitlines() if line.strip()}
+        omitted = sorted(projects - listed)
+        if omitted and listing_errors is not None:
+            listing_errors.append(
+                f"`gcloud projects list` rc=0 did not name {', '.join(omitted)}, so the listing is filtered"
+            )
+        projects |= listed
+
+    return sorted(projects)
+
 
 def audit_project_networking(project_id: str, skipped_targets: list, active_targets: list) -> list[dict]:
     """Audits PSC forwarding rules in a project (psc-routing-deadlock).
