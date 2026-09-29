@@ -14229,7 +14229,6 @@ class TestScopedCoverage(unittest.TestCase):
         self.assertEqual(audit_report.target_kind("project/acme-prod"), "project")
         self.assertEqual(audit_report.target_kind("acme-prod/us-east4/gke-nodes"), "subnet")
         self.assertEqual(audit_report.target_kind("prod-us-east"), "cluster")
-        self.assertEqual(audit_report.target_kind("acme-prod/prod-us-east"), "cluster")
 
     def test_a_project_target_owes_only_the_project_scoped_checks(self):
         gaps = audit_report.coverage_gaps(self._doc([self._clean_project(), self._clean_cluster()]))
@@ -16951,11 +16950,11 @@ class TestFinishWithoutAManifestIsUnchanged(HarnessTestCase):
             "--json body": json.dumps({"body": previous_body}),
         }
         qualified_doc = make_doc(
-            clusters=[{"name": "acme-prod/prod-us-east", "location": "us-east1", "project": "acme-prod"}],
+            clusters=[{"name": "acme-prod/us-east1/prod-us-east", "location": "us-east1", "project": "acme-prod"}],
             findings=[
                 make_finding(
                     fid="a",
-                    cluster="acme-prod/prod-us-east",
+                    cluster="acme-prod/us-east1/prod-us-east",
                     title="Alpha finding",
                 )
             ],

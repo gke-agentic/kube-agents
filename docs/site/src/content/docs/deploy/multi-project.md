@@ -28,8 +28,7 @@ differently:
   automatically discover every project the agent's identity can list
   (`gcloud projects list` unioned with the host project), so the IAM grant is
   what sets their scope. Every audit qualifies cluster names with
-  their project ID (`<project>/<cluster>`, or `<project>/<location>/<name>` in
-  `fleet-consistency-drift`) so identical cluster names in different projects
+  their project and location (`<project>/<location>/<name>`) so identical cluster names in different projects
   never collide. If the project listing fails, or a project cannot be read, the
   audit still runs on what it can reach and reports the run as partial. A
   project with the relevant API disabled counts as empty.

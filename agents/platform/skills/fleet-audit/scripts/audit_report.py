@@ -479,7 +479,7 @@ DELTA_RE = re.compile(
 # documents wrote.
 #
 # 6: the stockout-prevention and fleet-wide-cost-analysis SOPs qualify their
-# cluster names as `<project>/<cluster>`, and the networking and GCE audits
+# cluster names as `<project>/<location>/<name>`, and the networking and GCE audits
 # name their project targets `project/<id>`, so multi-project runs do not
 # collapse identically named targets across projects.
 ID_SCHEME = 6
@@ -1365,13 +1365,13 @@ def target_kind(name: str) -> str:
     """Which kind of thing a `scope.clusters` entry names.
 
     The SOPs already encode this in the name they ask for, so nothing new has to
-    be carried per entry: `project/<id>` is the project-scoped entry, a three-part
-    `<project>/<region>/<subnet>` path is a subnet target, and a bare `<cluster>`
-    or `<project>/<cluster>` name is a cluster.
+    be carried per entry: `project/<id>` is the project-scoped entry, a name with
+    a `/` in it is a `<project>/<region>/<subnet>` target, and a bare name is a
+    cluster.
     """
     if name.startswith(PROJECT_TARGET_PREFIX):
         return TARGET_KIND_PROJECT
-    return TARGET_KIND_SUBNET if name.count("/") >= 2 else TARGET_KIND_CLUSTER
+    return TARGET_KIND_SUBNET if "/" in name else TARGET_KIND_CLUSTER
 
 
 def audit_target_checks(audit_id: str, target_name: str) -> tuple[str, ...]:
