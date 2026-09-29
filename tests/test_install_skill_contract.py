@@ -9,7 +9,8 @@ invocation appears before any invocation that applies, and the apply that
 follows the dry run carries the same flags, so what runs is what was previewed.
 Outside the install workflow, every `install.sh` command is a preflight.
 Application Default Credentials are probed first, because the apply needs them
-and the installer does not check for them.
+unless a google provider credential variable is set, and the installer does not
+check for either.
 
 The skill also names the namespace the install lands in, which an operator
 needs before the first `kubectl` command. The value is the installer's
@@ -43,6 +44,17 @@ PREFLIGHT_MARKERS = frozenset({DRY_RUN, "--generate-only", DRY_RUN_ENV, "GENERAT
 # example needs it.
 OTHER_NAMESPACES: frozenset[str] = frozenset()
 ADC_PROBE = "gcloud auth application-default print-access-token"
+# The google provider's credential variables, read before ADC
+# (scripts/installer/README.md). Any of them lets stage 3 run without ADC.
+PROVIDER_CREDENTIAL_VARS = (
+    "GOOGLE_OAUTH_ACCESS_TOKEN",
+    "GOOGLE_CREDENTIALS",
+    "GOOGLE_CLOUD_KEYFILE_JSON",
+    "GCLOUD_KEYFILE_JSON",
+)
+# A sentence that gates stage 3 on credentials. Each must name the variables
+# above, or it turns away an operator whose apply would work.
+ADC_GATE = re.compile(r"stage\s+3\s+cannot\s+run\s+without|go\s+to\s+stage\s+3\s+without", re.IGNORECASE)
 
 # A fenced block, indented or not (CommonMark allows up to three spaces, and a
 # list item's content column), opened by ``` or ~~~ and closed by the same run.
@@ -54,9 +66,16 @@ CONTAINER_PREFIX = re.compile(r"^(?:[ \t]*(?:>|(?:[-*+]|\d{1,9}[.)])(?=[ \t])))+
 # Shell operators that end one command and start the next; a pipe stays inside
 # a command, since the curl form is `curl … | bash -s -- <flags>`.
 COMMAND_SEPARATORS = frozenset({"&&", "||", ";"})
+# A lone `&` backgrounds the command before it and starts the next, unless it
+# is part of a redirect: shlex lexes `2>&1` as `2>`, `&`, `1` and `&>/dev/null`
+# as `&`, `>/dev/null`.
+BACKGROUND = "&"
+REDIRECT_CHARS = ("<", ">")
 SHELL_PUNCTUATION = ";&|"
 INSTALL_SCRIPT = "install.sh"
-INSTALL_SH = re.compile(r"(^|[\s/])install\.sh(\s|$)")
+# install.sh as a whole word: not `install.sh-custom` or `my.install.sh`, but
+# followed by anything else, shell punctuation included (`./install.sh;`).
+INSTALL_SH = re.compile(r"(?<![\w.-])install\.sh(?![\w.-])")
 DEFAULT_NAMESPACE = re.compile(r'^DEFAULT_NAMESPACE="([^"]+)"', re.MULTILINE)
 KUBECTL_NAMESPACE = re.compile(r"\bkubectl\b[^\n`]*?\s(?:-n|--namespace)[=\s]+([A-Za-z0-9._-]+)")
 # install.sh reads its consents and modes from the environment as well as flags
@@ -70,21 +89,33 @@ ADC_PROBE_SILENCED = re.compile(
 )
 
 
+def is_separator(words: list[str], index: int) -> bool:
+    word = words[index]
+    if word in COMMAND_SEPARATORS:
+        return True
+    if word != BACKGROUND:
+        return False
+    before = words[index - 1] if index > 0 else ""
+    after = words[index + 1] if index + 1 < len(words) else ""
+    return not (before.endswith(REDIRECT_CHARS) or after.startswith(REDIRECT_CHARS))
+
+
 def shell_commands(line: str) -> list[str]:
-    """The commands on one shell line, split at `&&`, `||` and `;`.
+    """The commands on one shell line, split at `&&`, `||`, `;` and `&`.
 
     Comments are dropped. Each command comes back re-quoted, so `tokens()`
     reads it the way the shell would.
     """
     lexer = shlex.shlex(line, posix=True, punctuation_chars=SHELL_PUNCTUATION)
     lexer.whitespace_split = True
+    words = list(lexer)
     commands, current = [], []
-    for token in lexer:
-        if token in COMMAND_SEPARATORS:
+    for index, word in enumerate(words):
+        if is_separator(words, index):
             commands.append(current)
             current = []
         else:
-            current.append(token)
+            current.append(word)
     commands.append(current)
     return [shlex.join(command) for command in commands if command]
 
@@ -157,6 +188,21 @@ class ParserTest(unittest.TestCase):
         commands = [c for _, c in install_invocations(text)]
         self.assertEqual([True, False], [is_preflight(c) for c in commands])
 
+    def test_install_sh_before_punctuation_is_read(self) -> None:
+        for line in ("./install.sh;", "./install.sh&&echo done", "./install.sh|cat"):
+            text = f"```bash\n{line}\n```\n"
+            self.assertTrue(install_invocations(text), line)
+        for line in ("./install.sh-custom --x", "./my.install.sh --x"):
+            self.assertFalse(INSTALL_SH.search(line), line)
+
+    def test_backgrounded_apply_is_its_own_command(self) -> None:
+        commands = shell_commands("./install.sh --dry-run & ./install.sh --non-interactive")
+        self.assertEqual([True, False], [is_preflight(c) for c in commands])
+
+    def test_redirect_ampersand_does_not_split(self) -> None:
+        for line in ("./install.sh --x > log 2>&1", "./install.sh --x &>/dev/null", "./install.sh --x >&2"):
+            self.assertEqual(1, len(shell_commands(line)), line)
+
     def test_commented_flag_is_not_a_preflight(self) -> None:
         self.assertFalse(is_preflight("./install.sh --non-interactive  # preview with --dry-run first"))
 
@@ -182,16 +228,28 @@ class DryRunPrecedesApplyTest(unittest.TestCase):
         self.invocations = install_invocations(self.text)
 
     def test_adc_is_probed_before_the_first_install_command(self) -> None:
-        # The apply's Terraform needs Application Default Credentials, and the
-        # installer's non-interactive auth check tests only gcloud user
-        # credentials. On an existing cluster the irreversible adoption changes
-        # run before Terraform, so a missing ADC fails the install after them.
+        # The apply's Terraform needs Application Default Credentials unless a
+        # provider credential variable is set, and the installer's
+        # non-interactive auth check tests only gcloud user credentials. On an
+        # existing cluster the irreversible adoption changes run before
+        # Terraform, so missing credentials fail the install after them.
         # The probe must not print the token into the agent's transcript.
         before = self.text[: self.invocations[0][0]]
         probes = [line for line in before.splitlines() if ADC_PROBE in line]
         self.assertTrue(probes, f"probe ADC (`{ADC_PROBE}`) before the first install.sh command")
         for probe in probes:
             self.assertRegex(probe, ADC_PROBE_SILENCED, "the ADC probe prints the access token")
+
+    def test_adc_gate_admits_provider_credential_variables(self) -> None:
+        # Terraform's google provider reads these before ADC, so an operator
+        # with one set and no ADC has a working apply. A gate that names only
+        # ADC sends them to `gcloud auth application-default login` for a
+        # credential Terraform will not use.
+        gates = [p for p in re.split(r"\n\s*\n", self.text) if ADC_GATE.search(p)]
+        self.assertTrue(gates, "SKILL.md no longer says what stage 3 needs")
+        for gate in gates:
+            missing = [v for v in PROVIDER_CREDENTIAL_VARS if f"`{v}`" not in gate]
+            self.assertFalse(missing, f"credential gate omits {missing}: {gate.strip()[:120]!r}")
 
     def test_first_install_command_is_a_preflight(self) -> None:
         offset, command = self.invocations[0]

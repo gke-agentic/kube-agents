@@ -65,8 +65,11 @@ gcloud container clusters list --project <PROJECT_ID>
 gcloud storage ls gs://<PROJECT_ID>-kube-agents-tfstate/kube-agents/
 ```
 
-No `ADC: ok` means no Application Default Credentials; stage 3 cannot run without them (stage 2
-says why), so have the operator run `gcloud auth application-default login` now.
+No `ADC: ok` means no Application Default Credentials. Stage 3 cannot run without them unless one
+of the google provider's credential variables is set — `GOOGLE_OAUTH_ACCESS_TOKEN`,
+`GOOGLE_CREDENTIALS`, `GOOGLE_CLOUD_KEYFILE_JSON` or `GCLOUD_KEYFILE_JSON`, which Terraform reads
+before ADC (stage 2 says why). With none of them set, have the operator run
+`gcloud auth application-default login` now.
 
 A prefix in that bucket means an install already exists in the project, and so does an
 `install.env` where the installer looks for one: `$KUBE_AGENTS_INSTALL_ENV`, beside `install.sh`,
@@ -136,9 +139,12 @@ Go through the output with the operator:
 - `No Application Default Credentials; skipping the resource preview` means no plan ran, and on an
   existing cluster the NetworkPolicy and node-pool checks were skipped too, so their warnings are
   missing. Have the operator run `gcloud auth application-default login` and repeat stage 2. Do not
-  go to stage 3 without ADC: the apply's Terraform needs it, the installer's own auth check does not
-  test it, and on an existing cluster the Workload Identity, CMEK and NetworkPolicy changes run
-  before Terraform starts — the install fails after making them.
+  go to stage 3 without ADC or one of the provider's credential variables
+  (`GOOGLE_OAUTH_ACCESS_TOKEN`, `GOOGLE_CREDENTIALS`, `GOOGLE_CLOUD_KEYFILE_JSON`,
+  `GCLOUD_KEYFILE_JSON`): the apply's Terraform needs one, the installer's own auth check tests
+  neither, and on an existing cluster the Workload Identity, CMEK and NetworkPolicy changes run
+  before Terraform starts — the install fails after making them. A credential variable does not
+  bring the preview back, since the dry run's plan gate checks ADC alone.
 - `No ... API key was provided` is a warning, not a failure: the install would finish with an agent
   that cannot call its model. Resolve the key before stage 3.
 
