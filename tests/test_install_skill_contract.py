@@ -24,6 +24,7 @@ Run:
 from __future__ import annotations
 
 import re
+import shlex
 import unittest
 from pathlib import Path
 
@@ -32,21 +33,32 @@ SKILL = REPO_ROOT / ".agents/skills/install-kube-agents/SKILL.md"
 INSTALL_DEFAULTS = REPO_ROOT / "install.defaults.env"
 WORKFLOW_HEADING = "## Install workflow"
 
-# Flags that make an install.sh run create or mutate nothing.
+# What makes an install.sh run create or mutate nothing: the flags, or the
+# environment variables install.sh reads in their place.
 DRY_RUN = "--dry-run"
-PREFLIGHT_FLAGS = (DRY_RUN, "--generate-only")
+DRY_RUN_ENV = "DRY_RUN=true"
+PREFLIGHT_MARKERS = frozenset({DRY_RUN, "--generate-only", DRY_RUN_ENV, "GENERATE_ONLY=true"})
 # Namespaces outside the install that a `kubectl` example may legitimately name.
-# Anything else must be the installer's DEFAULT_NAMESPACE.
-OTHER_NAMESPACES = frozenset({"kube-system"})
+# Anything else must be the installer's DEFAULT_NAMESPACE. Add one here when an
+# example needs it.
+OTHER_NAMESPACES: frozenset[str] = frozenset()
 ADC_PROBE = "gcloud auth application-default print-access-token"
 
-FENCE = re.compile(r"^```[^\n]*\n(.*?)^```", re.MULTILINE | re.DOTALL)
+# A fenced block, indented or not (CommonMark allows up to three spaces, and a
+# list item's content column), opened by ``` or ~~~ and closed by the same run.
+FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})[^\n]*\n(.*?)^[ \t]*\1", re.MULTILINE | re.DOTALL)
 INSTALL_SH = re.compile(r"(^|[\s/])install\.sh(\s|$)")
 DEFAULT_NAMESPACE = re.compile(r'^DEFAULT_NAMESPACE="([^"]+)"', re.MULTILINE)
 KUBECTL_NAMESPACE = re.compile(r"\bkubectl\b[^\n`]*?\s(?:-n|--namespace)[=\s]+([A-Za-z0-9._-]+)")
-# A redirect of stdout to /dev/null: `>`, `1>` or `&>`, but not `2>` (stderr only),
-# which would still print the token.
-STDOUT_TO_DEVNULL = re.compile(r"(?<![2-9])>\s*/dev/null")
+# install.sh reads its consents and modes from the environment as well as flags
+# (ACCEPT_NO_NETWORK_POLICY, ALLOW_UNENCRYPTED_SECRETS, DRY_RUN, ...).
+ENV_ASSIGNMENT = re.compile(r"^[A-Z_][A-Z0-9_]*=")
+# The probe with its own stdout sent to /dev/null: `>`, `1>`, `&>` or `>>`,
+# optionally after a stderr redirect. A redirect on another command on the line,
+# or a stderr-only one, still prints the token.
+ADC_PROBE_SILENCED = re.compile(
+    re.escape(ADC_PROBE) + r"(?:\s+2>(?:&1|\s*/dev/null))*\s+[1&]?>>?\s*/dev/null(?=\s|$)"
+)
 
 
 def install_invocations(text: str) -> list[tuple[int, str]]:
@@ -57,20 +69,57 @@ def install_invocations(text: str) -> list[tuple[int, str]]:
     """
     found = []
     for block in FENCE.finditer(text):
-        joined = re.sub(r"\\\n", " ", block.group(1))
+        joined = re.sub(r"\\\n", " ", block.group(2))
         for command in joined.splitlines():
             if INSTALL_SH.search(command):
                 found.append((block.start(), command))
     return found
 
 
+def tokens(command: str) -> list[str]:
+    # Shell words with quotes removed and any `# comment` dropped, so a flag
+    # named in a comment does not count as passed.
+    return shlex.split(command, comments=True)
+
+
 def is_preflight(command: str) -> bool:
-    return any(flag in command.split() for flag in PREFLIGHT_FLAGS)
+    return not PREFLIGHT_MARKERS.isdisjoint(tokens(command))
 
 
-def flags(command: str) -> set[str]:
+def settings(command: str) -> set[str]:
+    # Flags and environment assignments: both set what install.sh does.
     # `bash -s --` ends the curl form's shell options; it is not an installer flag.
-    return {token for token in command.split() if token.startswith("--") and token != "--"}
+    return {
+        token
+        for token in tokens(command)
+        if (token.startswith("--") and token != "--") or ENV_ASSIGNMENT.match(token)
+    }
+
+
+class ParserTest(unittest.TestCase):
+    """The shapes the contract tests must not be blind to."""
+
+    def test_indented_fence_is_read(self) -> None:
+        text = "1. Decision\n\n   ```bash\n   ./install.sh --non-interactive\n   ```\n"
+        self.assertEqual(1, len(install_invocations(text)))
+
+    def test_commented_flag_is_not_a_preflight(self) -> None:
+        self.assertFalse(is_preflight("./install.sh --non-interactive  # preview with --dry-run first"))
+
+    def test_env_dry_run_is_a_preflight(self) -> None:
+        self.assertTrue(is_preflight("DRY_RUN=true ./install.sh --non-interactive"))
+
+    def test_env_consent_counts_as_a_setting(self) -> None:
+        self.assertIn(
+            "ACCEPT_NO_NETWORK_POLICY=true",
+            settings("ACCEPT_NO_NETWORK_POLICY=true ./install.sh --non-interactive"),
+        )
+
+    def test_adc_probe_redirect_must_be_its_own(self) -> None:
+        for silenced in (">/dev/null", "1>/dev/null", "&>/dev/null", ">/dev/null 2>&1", "2>/dev/null >/dev/null"):
+            self.assertRegex(f'{ADC_PROBE} {silenced} && echo "ADC: ok"', ADC_PROBE_SILENCED, silenced)
+        for leaking in ("2>/dev/null", "2>>/dev/null", '&& echo "ADC: ok" >/dev/null'):
+            self.assertNotRegex(f"{ADC_PROBE} {leaking}", ADC_PROBE_SILENCED, leaking)
 
 
 class DryRunPrecedesApplyTest(unittest.TestCase):
@@ -88,7 +137,7 @@ class DryRunPrecedesApplyTest(unittest.TestCase):
         probes = [line for line in before.splitlines() if ADC_PROBE in line]
         self.assertTrue(probes, f"probe ADC (`{ADC_PROBE}`) before the first install.sh command")
         for probe in probes:
-            self.assertRegex(probe, STDOUT_TO_DEVNULL, "the ADC probe prints the access token")
+            self.assertRegex(probe, ADC_PROBE_SILENCED, "the ADC probe prints the access token")
 
     def test_first_install_command_is_a_preflight(self) -> None:
         offset, command = self.invocations[0]
@@ -108,16 +157,17 @@ class DryRunPrecedesApplyTest(unittest.TestCase):
         # The skill tells the agent to apply "the last stage 2 command without
         # --dry-run", and shows that apply three ways (curl, release bundle,
         # checkout). Hand-written copies drift; an agent copying one that did
-        # would apply flags the operator never previewed. Only flags are
-        # compared, since the three forms invoke install.sh differently.
+        # would apply flags the operator never previewed. Flags and environment
+        # assignments are compared, not the rest of the command, since the three
+        # forms invoke install.sh differently.
         start, end = self.workflow_bounds()
         commands = [c for o, c in self.invocations if start <= o < end]
-        dry_run = next(c for c in commands if DRY_RUN in c.split())
+        dry_run = next(c for c in commands if {DRY_RUN, DRY_RUN_ENV} & set(tokens(c)))
         applies = [c for c in commands if not is_preflight(c)]
         self.assertTrue(applies, f"no apply under {WORKFLOW_HEADING!r}")
-        expected = sorted(flags(dry_run) - {DRY_RUN})
+        expected = sorted(settings(dry_run) - {DRY_RUN, DRY_RUN_ENV})
         for apply in applies:
-            self.assertEqual(expected, sorted(flags(apply)), apply.strip())
+            self.assertEqual(expected, sorted(settings(apply)), apply.strip())
 
     def test_no_apply_outside_the_workflow(self) -> None:
         # An agent lifts fenced commands out of any section, not only the
