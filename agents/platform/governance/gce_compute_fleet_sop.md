@@ -34,7 +34,7 @@ If `pending_remediation_requests` is non-empty, inspect each requested finding i
 #### 2.1 Instance startup script failures in serial port output (`gce-startup-script-status`)
 
 - **Severity**: `critical`
-- **Command**: `gcloud compute instances get-serial-port-output $VM --zone=$ZONE --port=1`
+- **Command**: `gcloud compute instances get-serial-port-output $VM --zone=$ZONE --project=$PROJECT --port=1`
 - **Condition**: VM serial port console output contains fatal startup script errors (`startup-script exit status 1` or `Finished running startup scripts with error`).
 - **Do NOT flag**: GKE node pool instances managed directly by GKE control plane or instances cleanly completing boot without errors.
 - **Remediation**: Correct boot metadata or deployment configuration in instance template or Terraform definition.
@@ -42,7 +42,7 @@ If `pending_remediation_requests` is non-empty, inspect each requested finding i
 #### 2.2 Managed Instance Group autoscaler flapping and resizing loops (`mig-autoscaler-flapping`)
 
 - **Severity**: `major`
-- **Command**: `gcloud compute instance-groups managed describe $MIG --region=$REGION --format=json`
+- **Command**: `gcloud compute instance-groups managed describe $MIG --region=$REGION --project=$PROJECT --format=json`
 - **Condition**: MIG autoscaler repeatedly scales instances up and down within 15 minutes due to contradictory target metric thresholds.
 - **Do NOT flag**: GKE cluster autoscaler managed node pools (`k8s-` or `gke-` prefix) undergoing standard pod-driven scale events.
 - **Remediation**: Adjust autoscaling cool-down period and utilization targets in MIG specification.
@@ -50,7 +50,7 @@ If `pending_remediation_requests` is non-empty, inspect each requested finding i
 #### 2.3 Compute Engine Ops Agent guest telemetry and health check failures (`ops-agent-guest-health`)
 
 - **Severity**: `major`
-- **Command**: `gcloud compute instances describe $VM --zone=$ZONE --format=json`
+- **Command**: `gcloud compute instances describe $VM --zone=$ZONE --project=$PROJECT --format=json`
 - **Condition**: Standalone production VM instance lacks active Google Cloud Ops Agent telemetry reporting or guest health check failures are present.
 - **Do NOT flag**: GKE node instances, short-lived ephemeral batch VMs, or non-production test instances explicitly labeled for dev/test.
 - **Remediation**: Install or restart Google Cloud Ops Agent service on target VM instance.
@@ -58,7 +58,7 @@ If `pending_remediation_requests` is non-empty, inspect each requested finding i
 #### 2.4 Sole-tenant node group reservation headroom exhaustion (`sole-tenant-headroom`)
 
 - **Severity**: `minor`
-- **Command**: `gcloud compute sole-tenancy node-groups list --format=json`
+- **Command**: `gcloud compute sole-tenancy node-groups list --project=$PROJECT --format=json`
 - **Condition**: Sole-tenant node group utilization exceeds 90% allocated vCPU/memory capacity without failover host headroom.
 - **Do NOT flag**: Node groups with active autoscaling enabled or planned maintenance windows.
 - **Remediation**: Add capacity or expand sole-tenant node group reservation.
@@ -66,7 +66,7 @@ If `pending_remediation_requests` is non-empty, inspect each requested finding i
 #### 2.5 Orphaned Persistent Disk snapshots from deleted source disks (`orphaned-snapshots`)
 
 - **Severity**: `minor`
-- **Command**: `gcloud compute snapshots list --format=json`
+- **Command**: `gcloud compute snapshots list --project=$PROJECT --format=json`
 - **Condition**: Snapshot references source disk that has been deleted > 90 days ago and is not retained by any active backup policy.
 - **Do NOT flag**: Snapshots retained under explicit long-term legal hold or active compliance backup schedules.
 - **Remediation**: Clean up obsolete orphaned snapshot via `kind: gcloud`.

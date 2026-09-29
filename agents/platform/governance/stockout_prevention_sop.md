@@ -86,10 +86,10 @@ gcloud compute reservations list --project=<project> --format=json > /opt/data/s
 gcloud compute regions describe <region> --project=<project> --format="json(quotas)"
 
 # 4. Check Spot Capacity & Preemption Advice History (repeat for target machine types, e.g. g2-standard-4, n4-standard-4, c3-standard-4)
-gcloud beta compute advice capacity-history --region=<region> --provisioning-model=SPOT --machine-type=<machine_type> --types=PREEMPTION,PRICE --format=json
+gcloud beta compute advice capacity-history --project=<project> --region=<region> --provisioning-model=SPOT --machine-type=<machine_type> --types=PREEMPTION,PRICE --format=json
 
 # Or check capacity obtainability for target machine types:
-gcloud beta compute advice capacity --region=<region> --provisioning-model=SPOT --size=1 --instance-selection-machine-types="g2-standard-4,n4-standard-4,c3-standard-4" --target-distribution-shape=any --format=json
+gcloud beta compute advice capacity --project=<project> --region=<region> --provisioning-model=SPOT --size=1 --instance-selection-machine-types="g2-standard-4,n4-standard-4,c3-standard-4" --target-distribution-shape=any --format=json
 
 # 5. Autoscaler Visibility Logs (Stage 1 Triage Query)
 gcloud logging read 'log_id("container.googleapis.com/cluster-autoscaler-visibility") AND resource.labels.cluster_name="<cluster>" AND (jsonPayload.noDecisionStatus.noScaleUp:* OR jsonPayload.resultInfo.results.errorMsg:*)' --project=<project> --freshness=24h --limit=1000 --format="value(timestamp,resource.labels.cluster_name,jsonPayload.noDecisionStatus.noScaleUp.unhandledPodGroups[0].napFailureReasons[0].messageId)"
@@ -178,7 +178,7 @@ gcloud logging read 'log_id("container.googleapis.com/cluster-autoscaler-visibil
 #### 3.8 High preemption risk or low obtainability on Spot instances (`spot-scarcity-risk`)
 
 - **Reference:** `skills/gke-compute-classes/references/compute-class-prioritization.md`
-- **Command:** `gcloud beta compute advice capacity-history --region=<region> --provisioning-model=SPOT --machine-type=<machine_type> --types=PREEMPTION,PRICE --format=json`
+- **Command:** `gcloud beta compute advice capacity-history --project=<project> --region=<region> --provisioning-model=SPOT --machine-type=<machine_type> --types=PREEMPTION,PRICE --format=json`
 - **Flag when:** Workloads or ComputeClasses request Spot VM shapes that have high historical preemption rates (>20%) or low obtainability scores in `compute advice`, without alternative family fallbacks.
 - **Do NOT flag:** Spot configurations that have high obtainability scores or comprehensive multi-family fallbacks; non-production environments.
 - **Severity:** `major`.
@@ -188,7 +188,7 @@ gcloud logging read 'log_id("container.googleapis.com/cluster-autoscaler-visibil
 #### 3.9 Single-zone node pools on Standard clusters (`single-zone-nodepool`)
 
 - **Reference:** `skills/gke-compute-classes/references/compute-class-provisioning-methods.md`
-- **Command:** `gcloud container node-pools list --cluster=<cluster> --location=<location> --format=json`
+- **Command:** `gcloud container node-pools list --cluster=<cluster> --location=<location> --project=<project> --format=json`
 - **Flag when:** A Standard mode GKE cluster has autoscaling node pools restricted to a single zone with no Node Auto-Provisioning (NAP) or regional multi-zone node pools configured, or node pools near `autoscaling.maxNodeCount` ceilings.
 - **Do NOT flag:** Autopilot clusters (fully managed multi-zone); regional clusters with multi-zone node pools.
 - **Severity:** `major`.

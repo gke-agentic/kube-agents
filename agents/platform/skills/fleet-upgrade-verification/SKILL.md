@@ -34,8 +34,8 @@ Neither reads versions against a target.
 - `--project` is repeatable and, when given, is the whole scope. Without it the script takes the
   union of `GCP_PROJECT_ID`, `GKE_PROJECT_ID` and `PROJECT_ID` with `MONITORED_PROJECT_IDS`
   (comma- or whitespace-separated) when set, or with every project visible to
-  `gcloud projects list` when `MONITORED_PROJECT_IDS` is unset, and asks gcloud for its configured
-  project only when none of those are set.
+  `gcloud projects list` plus gcloud's configured project when `MONITORED_PROJECT_IDS` is unset
+  or blank.
 - `--target-version` sets one target for every member, in the `MAJOR.MINOR.PATCH-gke.BUILD` form
   the fleet reports (`1.31.4-gke.1183000`); the `-gke.BUILD` suffix is optional and reads as build
   0 without it. Without the flag, each member is measured against its own release channel's
