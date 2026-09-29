@@ -47,6 +47,15 @@ ADC_PROBE = "gcloud auth application-default print-access-token"
 # A fenced block, indented or not (CommonMark allows up to three spaces, and a
 # list item's content column), opened by ``` or ~~~ and closed by the same run.
 FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})[^\n]*\n(.*?)^[ \t]*\1", re.MULTILINE | re.DOTALL)
+# Blockquote markers and list markers at the start of a line. A fence can open
+# after either (`> ```bash`, `- ```bash`); they are blanked to spaces before
+# FENCE runs, so offsets stay the same.
+CONTAINER_PREFIX = re.compile(r"^(?:[ \t]*(?:>|(?:[-*+]|\d{1,9}[.)])(?=[ \t])))+", re.MULTILINE)
+# Shell operators that end one command and start the next; a pipe stays inside
+# a command, since the curl form is `curl … | bash -s -- <flags>`.
+COMMAND_SEPARATORS = frozenset({"&&", "||", ";"})
+SHELL_PUNCTUATION = ";&|"
+INSTALL_SCRIPT = "install.sh"
 INSTALL_SH = re.compile(r"(^|[\s/])install\.sh(\s|$)")
 DEFAULT_NAMESPACE = re.compile(r'^DEFAULT_NAMESPACE="([^"]+)"', re.MULTILINE)
 KUBECTL_NAMESPACE = re.compile(r"\bkubectl\b[^\n`]*?\s(?:-n|--namespace)[=\s]+([A-Za-z0-9._-]+)")
@@ -61,18 +70,44 @@ ADC_PROBE_SILENCED = re.compile(
 )
 
 
+def shell_commands(line: str) -> list[str]:
+    """The commands on one shell line, split at `&&`, `||` and `;`.
+
+    Comments are dropped. Each command comes back re-quoted, so `tokens()`
+    reads it the way the shell would.
+    """
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=SHELL_PUNCTUATION)
+    lexer.whitespace_split = True
+    commands, current = [], []
+    for token in lexer:
+        if token in COMMAND_SEPARATORS:
+            commands.append(current)
+            current = []
+        else:
+            current.append(token)
+    commands.append(current)
+    return [shlex.join(command) for command in commands if command]
+
+
 def install_invocations(text: str) -> list[tuple[int, str]]:
     """Every install.sh command in a fenced block, with its offset in the file.
 
     Backslash continuations are joined first, so the flags on the lines after
-    `install.sh ... \\` count as part of the command they continue.
+    `install.sh ... \\` count as part of the command they continue. A line that
+    chains commands yields each one separately.
     """
+    blanked = CONTAINER_PREFIX.sub(lambda m: " " * len(m.group(0)), text)
     found = []
-    for block in FENCE.finditer(text):
+    for block in FENCE.finditer(blanked):
         joined = re.sub(r"\\\n", " ", block.group(2))
-        for command in joined.splitlines():
-            if INSTALL_SH.search(command):
-                found.append((block.start(), command))
+        for line in joined.splitlines():
+            # Only lines naming install.sh are lexed: other fenced blocks (JSON,
+            # prose output) need not be valid shell.
+            if not INSTALL_SH.search(line):
+                continue
+            for command in shell_commands(line):
+                if any(word == INSTALL_SCRIPT or word.endswith("/" + INSTALL_SCRIPT) for word in tokens(command)):
+                    found.append((block.start(), command))
     return found
 
 
@@ -102,6 +137,25 @@ class ParserTest(unittest.TestCase):
     def test_indented_fence_is_read(self) -> None:
         text = "1. Decision\n\n   ```bash\n   ./install.sh --non-interactive\n   ```\n"
         self.assertEqual(1, len(install_invocations(text)))
+
+    def test_blockquoted_fence_is_read(self) -> None:
+        text = "> Caution:\n>\n> ```bash\n> ./install.sh --non-interactive\n> ```\n"
+        self.assertEqual(["./install.sh --non-interactive"], [c for _, c in install_invocations(text)])
+
+    def test_fence_on_a_list_marker_line_is_read_and_closes(self) -> None:
+        # The indented closer must close this block, not open one that swallows
+        # the next real fence.
+        text = (
+            "- ```bash\n  ./install.sh --non-interactive\n  ```\n\n"
+            "```bash\n./install.sh --dry-run --non-interactive\n```\n"
+        )
+        commands = [c for _, c in install_invocations(text)]
+        self.assertEqual(["./install.sh --non-interactive", "./install.sh --dry-run --non-interactive"], commands)
+
+    def test_chained_apply_is_its_own_command(self) -> None:
+        text = "```bash\n./install.sh --dry-run --x=1 && ./install.sh --x=1\n```\n"
+        commands = [c for _, c in install_invocations(text)]
+        self.assertEqual([True, False], [is_preflight(c) for c in commands])
 
     def test_commented_flag_is_not_a_preflight(self) -> None:
         self.assertFalse(is_preflight("./install.sh --non-interactive  # preview with --dry-run first"))
