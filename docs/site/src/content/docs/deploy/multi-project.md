@@ -14,10 +14,12 @@ Service Account** there, and the project's GCP APIs enabled. On an install made
 with `install.sh`, list the project in `SCOPE_PROJECTS` in `install.env`: the
 installer then binds the read roles in that project and declares it in
 `spec.scope`, so Terraform owns the bindings and revokes them when the project is
-removed (see [Installer-managed installs](#installer-managed-installs)). Without
-`SCOPE_PROJECTS` the installer binds the service account in the host project
-alone, and the grants in other projects are yours to make by hand, as the
-steps below describe.
+removed (see [Installer-managed installs](#installer-managed-installs)).
+`SCOPE_FOLDERS` and `SCOPE_ORGANIZATIONS` do the same for a folder or
+organisation, whose bindings every project beneath it inherits. Without any of
+the three the installer binds the service account in the host project alone,
+and the grants in other projects are yours to make by hand, as the steps below
+describe.
 
 Once IAM access is granted, the two layers of the harness discover projects
 differently:
@@ -27,9 +29,11 @@ differently:
   project via `gcloud`, and scheduled governance audits and fleet upgrade checks
   automatically discover every project the agent's identity can list
   (`gcloud projects list` unioned with the host project), so the IAM grant is
-  what sets their scope. Every audit qualifies cluster names with
-  their project and location (`<project>/<location>/<name>`) so identical cluster names in different projects
-  never collide. If the project listing fails, or a project cannot be read, the
+  what sets their scope. Audits that target GKE clusters name each one
+  `<project>/<location>/<name>`, and the project-level audits name their targets
+  `project/<id>` (and subnets `<project>/<region>/<subnet>`), so identically named
+  resources in different projects never collide. If the project listing fails,
+  a project cannot be read, or the run is narrowed to named projects, the
   audit still runs on what it can reach and reports the run as partial. A
   project with the relevant API disabled counts as empty.
 - **Cluster Agent profiles, specialist routing, and Kubernetes event watching
@@ -63,8 +67,7 @@ That one apply binds the read roles in the project and adds it to
 `spec.scope.projects`, which covers Steps 2 and 4 below; Step 3 (enabling the
 APIs) and the Verify section still apply. `SCOPE_EXCLUDE_PROJECTS` and
 `SCOPE_EXCLUDE_CLUSTERS` (`project/location/cluster`) declare exclusions the
-same way. The keys are described in the installer README's "Projects in scope"
-section, and the field in
+same way. The field and every key that sets it are described under
 [`spec.scope`](/kube-agents/operator/platformagent-crd/#specscope).
 
 ## Setup
@@ -243,9 +246,10 @@ On an install you manage with Helm or `kubectl` directly:
    Agent profiles over two clean runs.
 2. If you onboarded clusters in chat, add each one to
    [`spec.scope.exclude.clusters`](/kube-agents/operator/platformagent-crd/#specscope)
-   (`projectId`, `location`, `clusterName`). The reconciler keeps a
-   chat-onboarded profile it did not create, and removes an excluded one on its
-   next run.
+   (`projectId`, `location`, `clusterName`). A profile the scope never
+   produced is kept (listed under `unmanaged` in `fleet_scope.json`), so
+   dropping the project alone leaves it in place; an excluded cluster loses its
+   profile on the next run.
 3. Revoke the IAM bindings on the target project so the Platform Agent and its
    scheduled audits stop querying it. A folder-level grant cannot be revoked for
    one project alone; move the project out of the folder or grant per project

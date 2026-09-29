@@ -16936,15 +16936,21 @@ class TestFinishWithoutAManifestIsUnchanged(HarnessTestCase):
 
 
 
+    # The scheme a ledger carried before the cost and stockout SOPs qualified
+    # their cluster names. A literal, so reverting the bump fails the test below.
+    SCHEME_BEFORE_QUALIFIED_COST_AND_STOCKOUT = 5
+
     def test_previous_scheme_bare_cluster_names_withhold_resolved(self):
         previous_body = published_body(
             make_doc(findings=[make_finding(fid="a", cluster="prod-us-east", title="Alpha finding")]),
             generated_at=NOW,
         ).replace(
             f"<!-- audit-id-scheme: {audit_report.ID_SCHEME} -->",
-            f"<!-- audit-id-scheme: {audit_report.ID_SCHEME - 1} -->",
+            f"<!-- audit-id-scheme: {self.SCHEME_BEFORE_QUALIFIED_COST_AND_STOCKOUT} -->",
         )
-        self.assertEqual(audit_report.parse_id_scheme(previous_body), audit_report.ID_SCHEME - 1)
+        self.assertEqual(
+            audit_report.parse_id_scheme(previous_body), self.SCHEME_BEFORE_QUALIFIED_COST_AND_STOCKOUT
+        )
         self.harness.replies = {
             "issue list": self.issue_list(),
             "--json body": json.dumps({"body": previous_body}),
