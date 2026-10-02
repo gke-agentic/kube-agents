@@ -295,11 +295,21 @@ def _terraform_helm_timeout_seconds():
     return int(match.group(1))
 
 
-def _rollback_ready_timeout_seconds():
-    """READY_TIMEOUT_SECONDS in scripts/release/rollback_environment.sh."""
+def _helm_retag_timeout_seconds():
+    """--wait --timeout in helm_retag() in upgrade.sh, paid by operator and harness modes."""
+    text = _UPGRADE_SCRIPT.read_text()
+    block = re.search(r"helm_retag\(\)\s*\{.*?\n\s*\}", text, re.DOTALL)
+    assert block, "could not find helm_retag() in upgrade.sh"
+    match = re.search(r"--wait\s+--timeout\s+(\d+)m\b", block.group(0))
+    assert match, "could not find --wait --timeout <N>m in helm_retag()"
+    return int(match.group(1)) * 60
+
+
+def _rollback_constant_seconds(name):
+    """A readonly timeout constant (in seconds) in scripts/release/rollback_environment.sh."""
     rollback = (_ROOT / "scripts" / "release" / "rollback_environment.sh").read_text()
-    match = re.search(r"^readonly READY_TIMEOUT_SECONDS=(\d+)$", rollback, re.MULTILINE)
-    assert match, "could not find READY_TIMEOUT_SECONDS in rollback_environment.sh"
+    match = re.search(rf"^readonly {re.escape(name)}=(\d+)$", rollback, re.MULTILINE)
+    assert match, f"could not find readonly {name} in rollback_environment.sh"
     return int(match.group(1))
 
 
@@ -419,11 +429,22 @@ class SiblingGatewayRolloutGatesTest(unittest.TestCase):
         confirm_image = _confirm_agent_image_timeout_seconds()
         sandbox_gate = _sandbox_rollout_timeout_seconds()
         helm_wait = _terraform_helm_timeout_seconds()
-        rollback_ready = _rollback_ready_timeout_seconds()
+        helm_retag = _helm_retag_timeout_seconds()
+        rollback_ready = _rollback_constant_seconds("READY_TIMEOUT_SECONDS")
+        rollback_operator_scale = _rollback_constant_seconds("OPERATOR_SCALE_TIMEOUT_SECONDS")
+        rollback_image_confirm = _rollback_constant_seconds("IMAGE_CONFIRM_TIMEOUT_SECONDS")
 
         harness_waits = confirm_image + gateway_gate + 2 * sandbox_gate
         full_upgrade_waits = helm_wait + controller_gate + harness_waits
-        rollback_leg_waits = 2 * controller_gate + 2 * harness_waits + 4 * rollback_ready
+        operator_move_waits = helm_retag + controller_gate
+        harness_move_waits = helm_retag + harness_waits
+        assert_running_waits = 2 * rollback_image_confirm + 2 * rollback_ready
+        rollback_leg_waits = (
+            2 * operator_move_waits
+            + 2 * harness_move_waits
+            + 2 * rollback_operator_scale
+            + 2 * assert_running_waits
+        )
 
         workflows_dir = _ROOT / ".github" / "workflows"
         reconcile_doc = yaml.safe_load((workflows_dir / "reconcile-environment.yml").read_text())

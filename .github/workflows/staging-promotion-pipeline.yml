@@ -232,11 +232,13 @@ jobs:
     concurrency:
       group: nightly-environment
       cancel-in-progress: false
-    # Four upgrade.sh moves — two operator (120s controller gate each) and two
-    # harness (each up to a 25m gateway gate, 5m image confirmation, and two 3m
-    # sandbox waits) — plus two assert_running checks (600s rollout + 600s Ready
-    # condition each). Held by SiblingGatewayRolloutGatesTest.
-    timeout-minutes: 125
+    # Four upgrade.sh moves — two operator (10m helm_retag + 120s controller gate
+    # each) and two harness (each 10m helm_retag + 5m image confirmation + 25m
+    # gateway gate + two 3m sandbox waits) — plus two 120s operator-scale handoff
+    # gates and two assert_running checks (two 120s image confirmations + 600s
+    # rollout + 600s Ready condition each) = 168m worst-case serial waits.
+    # Held by SiblingGatewayRolloutGatesTest.
+    timeout-minutes: 175
     permissions:
       contents: read
       id-token: write
