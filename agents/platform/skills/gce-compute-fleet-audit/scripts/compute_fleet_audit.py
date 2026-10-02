@@ -21,6 +21,7 @@ DEFAULT_TIMEOUT_SECONDS = 60
 ORPHANED_SNAPSHOT_AGE_DAYS = 90
 PROJECT_TARGET_PREFIX = "project/"
 GLOBAL_LOCATION = "global"
+UNKNOWN_PROJECT = "unknown"
 # The skipped-target name for "every project `gcloud projects list` would have
 # named": the listing failed, so how many other projects the fleet holds is
 # unknown and the run must read as partial rather than as a full sweep. Same
@@ -350,10 +351,10 @@ def main():
     if not target_projects:
         sys.stderr.write("No target projects resolved from CLI, environment, or gcloud.\n")
         skipped_targets.append({
-            "cluster": f"{PROJECT_TARGET_PREFIX}unknown",
-            "name": f"{PROJECT_TARGET_PREFIX}unknown",
-            "location": "global",
-            "project": "unknown",
+            "cluster": f"{PROJECT_TARGET_PREFIX}{UNKNOWN_PROJECT}",
+            "name": f"{PROJECT_TARGET_PREFIX}{UNKNOWN_PROJECT}",
+            "location": GLOBAL_LOCATION,
+            "project": UNKNOWN_PROJECT,
             "reason": "No GCP project ID configured or resolved"
         })
 
@@ -379,7 +380,9 @@ def main():
             sys.stderr.write(f"Failed to write output to {args.output}: {e}\n")
             sys.exit(1)
 
-    print(f"Wrote {len(all_findings)} compute findings across {len(active_targets)} active projects. {len(skipped_targets)} targets skipped.")
+    written = f"; wrote {args.output}" if args.output else "; no --output, nothing written"
+    print(f"Found {len(all_findings)} compute findings across {len(active_targets)} active projects. "
+          f"{len(skipped_targets)} targets skipped{written}.")
 
 if __name__ == "__main__":
     main()

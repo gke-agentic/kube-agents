@@ -22,7 +22,8 @@ exclusion in effect whose scope covers the upgrade, the maintenance window's sta
 `upgrade_readiness.py`; this file reads and renders.
 
 Read-only against GCP: the gcloud commands it runs are `container clusters list`,
-`container get-server-config`, `projects list`, `config get-value project` and, with
+`container get-server-config`, `projects list`, `config get-value project`, `projects
+describe` (only to tie an API-disabled refusal to its project) and, with
 `--readiness`, `container clusters get-credentials`. The only things it writes are its
 own state file, the per-target kubeconfig files `get-credentials` produces, and the
 optional `--output` JSON.

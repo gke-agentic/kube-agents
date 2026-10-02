@@ -302,7 +302,9 @@ def main():
             sys.stderr.write(f"Failed to write output to {args.output}: {e}\n")
             sys.exit(1)
 
-    print(f"Wrote {len(all_findings)} networking findings across {len(active_targets)} active projects. {len(skipped_targets)} targets skipped.")
+    written = f"; wrote {args.output}" if args.output else "; no --output, nothing written"
+    print(f"Found {len(all_findings)} networking findings across {len(active_targets)} active projects. "
+          f"{len(skipped_targets)} targets skipped{written}.")
 
 if __name__ == "__main__":
     main()
