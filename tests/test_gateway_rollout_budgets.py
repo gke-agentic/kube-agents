@@ -208,7 +208,7 @@ class ReleaseReadinessGateTest(unittest.TestCase):
 
     def test_the_litellm_gate_stays_under_the_default_progress_deadline(self):
         # litellm sets no progressDeadlineSeconds of its own, so unlike the
-        # gateway it has the 600s default as its ceiling, not 1200s.
+        # gateway it has the 600s default as its ceiling, not 1800s.
         self.assertLess(
             self.litellm_gate,
             _DEFAULT_PROGRESS_DEADLINE_SECONDS,
@@ -218,7 +218,7 @@ class ReleaseReadinessGateTest(unittest.TestCase):
         )
 
     def test_the_two_deployments_do_not_share_one_gate(self):
-        """The ceilings differ by 600s, so one number cannot respect both."""
+        """The ceilings differ (600s vs 1800s), so one number cannot respect both."""
         self.assertNotEqual(
             self.gateway_gate,
             self.litellm_gate,
