@@ -239,9 +239,11 @@ jobs:
     # controller gate (operator) and 5m image confirmation (harness) — plus two
     # 120s operator-scale handoff gates and two assert_running checks (two 120s
     # image confirmations + 600s rollout + 600s Ready condition each): 230m of
-    # worst-case serial waits, read off the scripts by
-    # SiblingGatewayRolloutGatesTest rather than kept here.
-    timeout-minutes: 240
+    # worst-case serial waits, plus 15m for the fetch-depth 0 checkout, two
+    # checkout_at, two registry sweeps, the dry run and the snapshots between
+    # the moves. Read off the scripts by SiblingGatewayRolloutGatesTest rather
+    # than kept here.
+    timeout-minutes: 250
     permissions:
       contents: read
       id-token: write

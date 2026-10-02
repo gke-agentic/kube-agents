@@ -268,6 +268,14 @@ _E2E_RUNNER_SETUP_SECONDS = 300
 # 60-minute suite budget in staging-promotion-pipeline.yml).
 _E2E_RC_SUITE_ALLOWANCE_SECONDS = 1200
 _E2E_ALL_SUITES_ALLOWANCE_SECONDS = 3600
+# What the upgrade.sh workflows do outside the waits the floor sums. The
+# reconcile job: checkout, auth and gcloud setup, the lease and KMS checks,
+# and terraform init/plan/apply outside the Helm release wait. The rollback
+# leg: a fetch-depth 0 checkout, two checkout_at, two check_images_exist
+# registry sweeps, a dry run, snapshots and helm history calls between its
+# four moves (rollback_environment.sh L443-L470, L493-L509).
+_UPGRADE_WORKFLOW_SETUP_SECONDS = 600
+_ROLLBACK_LEG_SETUP_SECONDS = 900
 
 
 def _confirm_agent_image_timeout_seconds():
@@ -347,12 +355,15 @@ def _post_upgrade_waits_by_mode():
     confirm_image = _confirm_agent_image_timeout_seconds()
     sandbox_gate = _sandbox_rollout_timeout_seconds()
 
-    # Join `\`-continued lines so a multi-line guard is read as one condition.
-    lines = re.sub(r"\\\n\s*", " ", block.group(0)).splitlines()
+    # Join continued lines so a multi-line command or guard is read as one:
+    # `\`-continued, and bash's own continuation after a trailing `||`, `&&`
+    # or `|` (the shape upgrade.sh L1973-1974 writes its `if` in).
+    joined = re.sub(r"(\\|\|\||&&|\|)\n\s*", lambda m: ("" if m.group(1) == "\\" else m.group(1)) + " ", block.group(0))
+    lines = joined.splitlines()
     waits = {mode: [] for mode in _UPGRADE_MODES}
     guards = []
-    timed_lines = 0
-    attributed = 0
+    gate_re = re.compile(r'kubectl rollout status "(?P<target>[^"]+)"[^&|;]*?--timeout="?(?P<timeout>[^"\s]+)"?')
+    mode_test_re = re.compile(r'\[\[?\s*"\$PARAM_UPGRADE_MODE"\s*(?P<op>==?|!=)\s*"(?P<mode>\w+)"\s*\]?\]')
     for raw in lines:
         line = raw.strip()
         if line.startswith("#"):
@@ -362,10 +373,35 @@ def _post_upgrade_waits_by_mode():
             f"upgrade.sh step-5 block uses `{unmodelled.group(1)}`, which "
             f"_post_upgrade_waits_by_mode does not model; extend the parser: {line!r}"
         )
+        # Every wait on the line, counted before the line is classified, so a
+        # guard that waits (`if ! kubectl rollout status ...`) or a wait with
+        # no --timeout (bounded only by progressDeadlineSeconds) is refused
+        # rather than consumed by a branch that never looks for it.
+        waits_here = line.count("kubectl rollout status") + line.count("kubectl wait")
+        assert line.count("--timeout") <= waits_here, (
+            f"a --timeout outside a kubectl rollout status/wait in upgrade.sh's step-5 block: {line!r}"
+        )
         if line.startswith("if "):
-            assert not re.search(r'!\s*\[[^]]*\$PARAM_UPGRADE_MODE', line), (
+            assert waits_here == 0, f"a guard that waits is not modelled: {line!r}"
+            assert "PARAM_UPGRADE_MODE" not in line or not re.search(r"!\s*\[", line), (
                 f"negated --upgrade-mode test is not modelled: {line!r}"
             )
+            tests = list(mode_test_re.finditer(line))
+            assert len(tests) == line.count("PARAM_UPGRADE_MODE"), (
+                f"an --upgrade-mode test in a spelling the parser does not read: {line!r}"
+            )
+            negated = [t.group(0) for t in tests if t.group("op") == "!="]
+            assert not negated, f"negated --upgrade-mode test is not modelled: {negated} in {line!r}"
+            # Modes are narrowed only when every `||` alternative is a mode
+            # test or restarted_agent; an alternative on anything else lets
+            # every mode through, so such a guard is refused, not guessed at.
+            body = line[len("if ") :].split("; then")[0]
+            if tests:
+                for clause in re.split(r"\|\|", body):
+                    assert "PARAM_UPGRADE_MODE" in clause or "restarted_agent" in clause, (
+                        f"a `||` alternative that is neither an --upgrade-mode test nor "
+                        f"restarted_agent widens the modes this guard admits: {clause.strip()!r} in {line!r}"
+                    )
             guards.append(line)
             continue
         if line == "fi":
@@ -373,25 +409,18 @@ def _post_upgrade_waits_by_mode():
             guards.pop()
             continue
 
-        is_timed = "--timeout" in line or line.startswith("kubectl wait")
-        timed_lines += is_timed
-        gate = re.search(
-            r'kubectl rollout status "(?P<target>[^"]+)"[^\n]*?--timeout="?(?P<timeout>[^"\s]+)"?',
-            line,
-        )
+        gates = list(gate_re.finditer(line))
         confirm = "confirm_agent_image.sh" in line
-        if not gate and not confirm:
-            assert not is_timed, (
-                f"a timed wait in upgrade.sh's step-5 block is not in a shape "
-                f"_post_upgrade_waits_by_mode reads (quoted `kubectl rollout status` with "
-                f"`--timeout=`): {line!r}"
-            )
+        assert len(gates) == waits_here, (
+            f"{waits_here} wait(s) on a line of upgrade.sh's step-5 block but {len(gates)} in the shape "
+            f"_post_upgrade_waits_by_mode reads (quoted `kubectl rollout status` with `--timeout=`): {line!r}"
+        )
+        if not gates and not confirm:
             continue
-        attributed += 1
 
         modes = set(_UPGRADE_MODES)
         for guard in guards:
-            named = set(re.findall(r'"\$PARAM_UPGRADE_MODE" = "(\w+)"', guard))
+            named = {t.group("mode") for t in mode_test_re.finditer(guard)}
             if "restarted_agent" in guard:
                 named.add("operator")
             if named:
@@ -399,23 +428,17 @@ def _post_upgrade_waits_by_mode():
         if confirm:
             for mode in modes:
                 waits[mode].append(("confirm_agent_image.sh", confirm_image))
-            continue
-
-        timeout = gate.group("timeout")
-        if timeout == "$SANDBOX_ROLLOUT_TIMEOUT":
-            seconds = sandbox_gate
-        else:
-            numeric = re.fullmatch(r"(\d+)s", timeout)
-            assert numeric, f"unrecognised --timeout {timeout!r} in upgrade.sh step-5 block"
-            seconds = int(numeric.group(1))
-        for mode in modes:
-            waits[mode].append((gate.group("target"), seconds))
+        for gate in gates:
+            timeout = gate.group("timeout")
+            if timeout == "$SANDBOX_ROLLOUT_TIMEOUT":
+                seconds = sandbox_gate
+            else:
+                numeric = re.fullmatch(r"(\d+)s", timeout)
+                assert numeric, f"unrecognised --timeout {timeout!r} in upgrade.sh step-5 block"
+                seconds = int(numeric.group(1))
+            for mode in modes:
+                waits[mode].append((gate.group("target"), seconds))
     assert not guards, "unbalanced if in upgrade.sh step-5 block"
-    # confirm_agent_image.sh carries its timeout inside the script, so it is
-    # attributed without a --timeout on the line; every --timeout line must be.
-    assert timed_lines <= attributed, (
-        f"{timed_lines} timed waits in upgrade.sh's step-5 block but only {attributed} attributed"
-    )
     return waits
 
 
@@ -552,15 +575,22 @@ class SiblingGatewayRolloutGatesTest(unittest.TestCase):
         original = _UPGRADE_SCRIPT.read_text()
         gateway = 'kubectl rollout status "deployment/${PLATFORM_AGENT_DEPLOYMENT}" -n "$target_namespace" --timeout=1500s'
         statefulset_guard = '  if kubectl get statefulset "$PLATFORM_AGENT_SHELL_STATEFULSET"'
+        operator_guard = '  if [ "$PARAM_UPGRADE_MODE" = "operator" ] || [ "$PARAM_UPGRADE_MODE" = "full" ]; then'
         self.assertIn(gateway, original)
         self.assertIn(statefulset_guard, original)
+        self.assertIn(operator_guard, original)
         mutations = {
             "elif": (statefulset_guard, '  elif [ "$PARAM_UPGRADE_MODE" = "operator" ]; then\n    true\n  fi\n' + statefulset_guard),
             "else": ('    kubectl rollout status "statefulset/', '    true\n  else\n    kubectl rollout status "statefulset/'),
             "case": ('  print_success "Upgraded deployments verified healthy."', '  case "$PARAM_UPGRADE_MODE" in operator) true;; esac\n  print_success "Upgraded deployments verified healthy."'),
-            "negated mode test": ('  if [ "$PARAM_UPGRADE_MODE" = "operator" ] || [ "$PARAM_UPGRADE_MODE" = "full" ]; then', '  if ! [ "$PARAM_UPGRADE_MODE" = "operator" ]; then'),
+            "negated mode test": (operator_guard, '  if ! [ "$PARAM_UPGRADE_MODE" = "operator" ]; then'),
+            "!= mode test": (operator_guard, '  if [ "$PARAM_UPGRADE_MODE" != "harness" ]; then'),
+            "[[ ]] mode test": (operator_guard, '  if [[ "$PARAM_UPGRADE_MODE" == "operator" || "$PARAM_UPGRADE_MODE" == "full" ]]; then'),
+            "|| alternative on another flag": (operator_guard, '  if [ "$PARAM_UPGRADE_MODE" = "operator" ] || [ "$FORCE_CONTROLLER_WAIT" = "true" ]; then'),
             "unquoted target": (gateway, gateway.replace('"deployment/${PLATFORM_AGENT_DEPLOYMENT}"', "deployment/${PLATFORM_AGENT_DEPLOYMENT}")),
             "--timeout space form": (gateway, gateway.replace("--timeout=1500s", "--timeout 1500s")),
+            "no --timeout at all": (gateway, gateway.replace(" --timeout=1500s", "")),
+            "a guard that waits": (statefulset_guard, '  if ! kubectl rollout status "deployment/x" -n "$target_namespace" --timeout=300s; then\n    true\n  fi\n' + statefulset_guard),
             "kubectl wait": (gateway, gateway + '\n    kubectl wait --for=condition=Ready pod -l app=x -n "$target_namespace" --timeout=600s'),
         }
         with tempfile.TemporaryDirectory() as tmp:
@@ -573,6 +603,32 @@ class SiblingGatewayRolloutGatesTest(unittest.TestCase):
                     with mock.patch.object(sys.modules[__name__], "_UPGRADE_SCRIPT", mutated):
                         with self.assertRaises(AssertionError, msg=f"{shape} was parsed silently"):
                             _post_upgrade_waits_by_mode()
+
+            # And the one continuation bash allows that is not a `\`: a guard
+            # split after a trailing `||` (upgrade.sh L1973-1974's own shape)
+            # has to be read whole, so the gate under it bills both modes.
+            with self.subTest(shape="guard continued after ||"):
+                split_guard = operator_guard.replace(" || ", " ||\n    ")
+                text = original.replace(operator_guard, split_guard, 1)
+                self.assertNotEqual(text, original)
+                mutated.write_text(text)
+                with mock.patch.object(sys.modules[__name__], "_UPGRADE_SCRIPT", mutated):
+                    waits = _post_upgrade_waits_by_mode()
+                controller = "deployment/${KUBE_AGENTS_OPERATOR_DEPLOYMENT}"
+                self.assertIn(controller, [label for label, _ in waits["operator"]])
+                self.assertIn(controller, [label for label, _ in waits["full"]])
+                self.assertNotIn(controller, [label for label, _ in waits["harness"]])
+
+            # Two gates on one line are two waits: both have to be attributed,
+            # not the first one only.
+            with self.subTest(shape="two gates on one line"):
+                second = gateway.replace("deployment/${PLATFORM_AGENT_DEPLOYMENT}", "deployment/second").replace("1500s", "120s")
+                text = original.replace(gateway, gateway + " && " + second, 1)
+                self.assertNotEqual(text, original)
+                mutated.write_text(text)
+                with mock.patch.object(sys.modules[__name__], "_UPGRADE_SCRIPT", mutated):
+                    waits = _post_upgrade_waits_by_mode()
+                self.assertIn(("deployment/second", 120), waits["harness"])
 
     def test_upgrade_workflow_timeouts_cover_serial_rollout_gates(self):
         # Each --upgrade-mode's serial waits are the Helm wait its arm pays
@@ -603,21 +659,24 @@ class SiblingGatewayRolloutGatesTest(unittest.TestCase):
         workflows_dir = _ROOT / ".github" / "workflows"
         reconcile_doc = yaml.safe_load((workflows_dir / "reconcile-environment.yml").read_text())
         reconcile_sec = int(reconcile_doc["jobs"]["reconcile"]["timeout-minutes"]) * 60
-        self.assertGreater(
+        reconcile_floor = _UPGRADE_WORKFLOW_SETUP_SECONDS + full_upgrade_waits
+        self.assertGreaterEqual(
             reconcile_sec,
-            full_upgrade_waits,
-            f"reconcile-environment.yml ({reconcile_sec}s) leaves no room past "
-            f"upgrade.sh --upgrade-mode=full's {full_upgrade_waits}s of serial waits",
+            reconcile_floor,
+            f"reconcile-environment.yml ({reconcile_sec}s) is below its setup allowance "
+            f"({_UPGRADE_WORKFLOW_SETUP_SECONDS}s) plus upgrade.sh --upgrade-mode=full's "
+            f"{full_upgrade_waits}s of serial waits",
         )
 
         promo_doc = yaml.safe_load((workflows_dir / "staging-promotion-pipeline.yml").read_text())
         rollback_sec = int(promo_doc["jobs"]["step-3b-rollback-leg"]["timeout-minutes"]) * 60
-        self.assertGreater(
+        rollback_floor = _ROLLBACK_LEG_SETUP_SECONDS + rollback_leg_waits
+        self.assertGreaterEqual(
             rollback_sec,
-            rollback_leg_waits,
-            f"step-3b-rollback-leg ({rollback_sec}s) leaves no room past "
-            f"rollback_environment.sh's {rollback_leg_waits}s of serial waits "
-            f"(operator move {operator_move_waits}s, harness move {harness_move_waits}s)",
+            rollback_floor,
+            f"step-3b-rollback-leg ({rollback_sec}s) is below its setup allowance "
+            f"({_ROLLBACK_LEG_SETUP_SECONDS}s) plus rollback_environment.sh's {rollback_leg_waits}s "
+            f"of serial waits (operator move {operator_move_waits}s, harness move {harness_move_waits}s)",
         )
 
 
