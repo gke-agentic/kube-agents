@@ -192,9 +192,11 @@ jobs:
       # agentplugins_e2e_test.py, and the stockout file across every scenario
       # rather than the one the gate pins.
       optional_suites: "gchat,agent-plugin,stockout-full"
-      # Double the RC gate's 60: the same fixed provisioning cost, but all five
-      # test files rather than one suite's worth.
-      timeout_minutes: 120
+      # Up to 74m before the first test runs (see e2e-run.yml: ~5m setup, 64m of
+      # wait_for_gke_readiness.sh gates paid twice, and 5m confirm_agent_image.sh),
+      # plus ~60m across all five test files rather than the RC gate's single suite.
+      # Held by SiblingGatewayRolloutGatesTest in tests/test_gateway_rollout_budgets.py.
+      timeout_minutes: 135
     secrets: inherit
 
   step-3b-rollback-leg:
@@ -230,8 +232,11 @@ jobs:
     concurrency:
       group: nightly-environment
       cancel-in-progress: false
-    # Four Helm moves, each with a rollout wait of up to fifteen minutes.
-    timeout-minutes: 90
+    # Four upgrade.sh moves — two operator (120s controller gate each) and two
+    # harness (each up to a 25m gateway gate, 5m image confirmation, and two 3m
+    # sandbox waits) — plus two assert_running checks (600s rollout + 600s Ready
+    # condition each). Held by SiblingGatewayRolloutGatesTest.
+    timeout-minutes: 125
     permissions:
       contents: read
       id-token: write

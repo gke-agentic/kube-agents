@@ -278,6 +278,31 @@ def _confirm_agent_image_timeout_seconds():
     return int(match.group(1))
 
 
+def _sandbox_rollout_timeout_seconds():
+    """SANDBOX_ROLLOUT_TIMEOUT in upgrade.sh, waited twice (shell + credential-proxy)."""
+    match = re.search(r'^SANDBOX_ROLLOUT_TIMEOUT="(\d+)s"$', _UPGRADE_SCRIPT.read_text(), re.MULTILINE)
+    assert match, "could not find SANDBOX_ROLLOUT_TIMEOUT in upgrade.sh"
+    return int(match.group(1))
+
+
+def _terraform_helm_timeout_seconds():
+    """helm_release.kube_agents timeout in terraform/examples/full-install/main.tf."""
+    tf = (_ROOT / "terraform" / "examples" / "full-install" / "main.tf").read_text()
+    block = re.search(r'resource "helm_release" "kube_agents"\s*\{.*?\n\}', tf, re.DOTALL)
+    assert block, "could not find resource helm_release kube_agents in main.tf"
+    match = re.search(r"^\s*timeout\s*=\s*(\d+)\s*$", block.group(0), re.MULTILINE)
+    assert match, "could not find timeout in helm_release.kube_agents"
+    return int(match.group(1))
+
+
+def _rollback_ready_timeout_seconds():
+    """READY_TIMEOUT_SECONDS in scripts/release/rollback_environment.sh."""
+    rollback = (_ROOT / "scripts" / "release" / "rollback_environment.sh").read_text()
+    match = re.search(r"^readonly READY_TIMEOUT_SECONDS=(\d+)$", rollback, re.MULTILINE)
+    assert match, "could not find READY_TIMEOUT_SECONDS in rollback_environment.sh"
+    return int(match.group(1))
+
+
 class SiblingGatewayRolloutGatesTest(unittest.TestCase):
     """Other callers that wait on a cold gateway rollout or run wait_for_gke_readiness.sh."""
 
@@ -323,35 +348,101 @@ class SiblingGatewayRolloutGatesTest(unittest.TestCase):
         gates_paid_twice = 2 * (gateway_gate + litellm_gate)
         confirm_image = _confirm_agent_image_timeout_seconds()
 
-        callers = (
-            (
-                "e2e-run.yml",
-                lambda doc: doc[True]["workflow_call"]["inputs"]["timeout_minutes"].get("default"),
-                gates_paid_twice
-                + confirm_image
-                + _E2E_RUNNER_SETUP_SECONDS
-                + _E2E_RC_SUITE_ALLOWANCE_SECONDS,
-            ),
-            (
-                "e2e-manual-runner.yml",
-                lambda doc: doc["jobs"]["run-e2e"].get("timeout-minutes"),
-                gates_paid_twice
-                + _E2E_RUNNER_SETUP_SECONDS
-                + _E2E_ALL_SUITES_ALLOWANCE_SECONDS,
-            ),
+        e2e_cfg = yaml.safe_load((_ROOT / "tests" / "e2e" / "e2e_config.yaml").read_text())
+        suite_files = {s["name"]: set(s.get("tests", ())) for s in e2e_cfg["suites"]}
+        all_e2e_files = set().union(*suite_files.values())
+
+        workflows_dir = _ROOT / ".github" / "workflows"
+        e2e_run_doc = yaml.safe_load((workflows_dir / "e2e-run.yml").read_text())
+        default_minutes = e2e_run_doc[True]["workflow_call"]["inputs"]["timeout_minutes"].get(
+            "default"
         )
-        for workflow_name, extract_minutes, required_seconds in callers:
-            with self.subTest(workflow=workflow_name):
-                doc = yaml.safe_load((_ROOT / ".github" / "workflows" / workflow_name).read_text())
-                minutes = extract_minutes(doc)
-                self.assertIsNotNone(minutes, f"{workflow_name} has no job timeout")
-                job_seconds = int(minutes) * 60
+        self.assertIsNotNone(default_minutes, "e2e-run.yml has no default timeout_minutes")
+
+        e2e_callers = []
+        for wf_path in sorted(workflows_dir.glob("*.yml")):
+            doc = yaml.safe_load(wf_path.read_text())
+            for job_id, job in (doc.get("jobs") or {}).items():
+                if job.get("uses") == "./.github/workflows/e2e-run.yml":
+                    with_args = job.get("with") or {}
+                    minutes = with_args.get("timeout_minutes", default_minutes)
+                    suites = [with_args.get("blocking_suite", "")]
+                    suites.extend(
+                        s.strip()
+                        for s in (with_args.get("optional_suites") or "").split(",")
+                        if s.strip()
+                    )
+                    files = set().union(*(suite_files.get(s, set()) for s in suites))
+                    suite_allowance = (
+                        _E2E_ALL_SUITES_ALLOWANCE_SECONDS
+                        if files == all_e2e_files or "stockout-full" in suites
+                        else _E2E_RC_SUITE_ALLOWANCE_SECONDS
+                    )
+                    required = (
+                        gates_paid_twice
+                        + confirm_image
+                        + _E2E_RUNNER_SETUP_SECONDS
+                        + suite_allowance
+                    )
+                    e2e_callers.append((f"{wf_path.name}:{job_id}", int(minutes), required))
+
+        self.assertGreaterEqual(
+            len(e2e_callers), 2, "expected at least rc and nightly callers of e2e-run.yml"
+        )
+
+        manual_doc = yaml.safe_load((workflows_dir / "e2e-manual-runner.yml").read_text())
+        manual_minutes = manual_doc["jobs"]["run-e2e"].get("timeout-minutes")
+        self.assertIsNotNone(manual_minutes, "e2e-manual-runner.yml has no job timeout")
+        e2e_callers.append(
+            (
+                "e2e-manual-runner.yml:run-e2e",
+                int(manual_minutes),
+                gates_paid_twice + _E2E_RUNNER_SETUP_SECONDS + _E2E_ALL_SUITES_ALLOWANCE_SECONDS,
+            )
+        )
+
+        for label, minutes, required_seconds in e2e_callers:
+            with self.subTest(caller=label):
+                job_seconds = minutes * 60
                 self.assertGreaterEqual(
                     job_seconds,
                     required_seconds,
-                    f"{workflow_name} timeout ({minutes}m = {job_seconds}s) is below the "
+                    f"{label} timeout ({minutes}m = {job_seconds}s) is below the "
                     f"modelled readiness gates + setup + suite floor ({required_seconds}s)",
                 )
+
+    def test_upgrade_workflow_timeouts_cover_serial_rollout_gates(self):
+        controller_gate = _rollout_gate_seconds(
+            _UPGRADE_SCRIPT, "kube-agents-controller-manager"
+        )
+        gateway_gate = _rollout_gate_seconds(_UPGRADE_SCRIPT, "platform-agent-gateway")
+        confirm_image = _confirm_agent_image_timeout_seconds()
+        sandbox_gate = _sandbox_rollout_timeout_seconds()
+        helm_wait = _terraform_helm_timeout_seconds()
+        rollback_ready = _rollback_ready_timeout_seconds()
+
+        harness_waits = confirm_image + gateway_gate + 2 * sandbox_gate
+        full_upgrade_waits = helm_wait + controller_gate + harness_waits
+        rollback_leg_waits = 2 * controller_gate + 2 * harness_waits + 4 * rollback_ready
+
+        workflows_dir = _ROOT / ".github" / "workflows"
+        reconcile_doc = yaml.safe_load((workflows_dir / "reconcile-environment.yml").read_text())
+        reconcile_sec = int(reconcile_doc["jobs"]["reconcile"]["timeout-minutes"]) * 60
+        self.assertGreater(
+            reconcile_sec,
+            full_upgrade_waits,
+            f"reconcile-environment.yml ({reconcile_sec}s) leaves no room past "
+            f"upgrade.sh --upgrade-mode=full's {full_upgrade_waits}s of serial waits",
+        )
+
+        promo_doc = yaml.safe_load((workflows_dir / "staging-promotion-pipeline.yml").read_text())
+        rollback_sec = int(promo_doc["jobs"]["step-3b-rollback-leg"]["timeout-minutes"]) * 60
+        self.assertGreater(
+            rollback_sec,
+            rollback_leg_waits,
+            f"step-3b-rollback-leg ({rollback_sec}s) leaves no room past "
+            f"rollback_environment.sh's {rollback_leg_waits}s of serial waits",
+        )
 
 
 if __name__ == "__main__":
