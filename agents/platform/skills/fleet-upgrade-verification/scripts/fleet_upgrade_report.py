@@ -58,6 +58,13 @@ API_DISABLED_MARKERS = (
     "accessNotConfigured",
     "has not been used in project",
 )
+# A disabled-API refusal names the consumer project -- by number in gcloud's
+# usual phrasing, by id in some. With a quota project set, that consumer is the
+# quota project rather than `--project`, so the marker alone cannot say whose
+# API is off. fleet_waste.refusal_owner draws the same line.
+REFUSED_PROJECT_NUMBER_RE = re.compile(r"\bprojects?[ /](\d+)\b")
+PROJECT_DESCRIBE_CMD = (GCLOUD, "projects", "describe")
+PROJECT_NUMBER_FORMAT = "--format=value(projectNumber)"
 # A stalled API call is reported as a failed read for its project or location rather
 # than blocking the agent turn; the same budget compute_fleet_audit.py gives gcloud.
 GCLOUD_TIMEOUT_SECONDS = 60
@@ -261,6 +268,31 @@ def run_gcloud_json(cmd: list[str]) -> tuple[list | dict | None, str | None]:
         return json.loads(stdout), None
     except ValueError as e:
         return None, f"{' '.join(cmd)} returned unparsable JSON: {e}"
+
+
+def refusal_names_project(project: str, stderr: str) -> tuple[bool, str]:
+    """Whether an API-disabled refusal is `project`'s own, with why when it is not.
+
+    Only the project's own refusal means it holds no cluster. One naming another
+    project -- the credential's quota project -- says nothing about this one, and
+    read as empty it would drop every recorded member of the project from the
+    rollout record with exit 0. A refusal naming no project, or one whose number
+    cannot be compared with this project's, is a failed read.
+    """
+    numbers = set(REFUSED_PROJECT_NUMBER_RE.findall(stderr))
+    if not numbers:
+        if re.search(rf"\b(?i:projects?)[ /]['\"\[]?{re.escape(project)}(?![\w-])", stderr):
+            return True, ""
+        return False, f"the refusal does not name {project!r}"
+    rc, stdout, err = run_cmd([*PROJECT_DESCRIBE_CMD, project, PROJECT_NUMBER_FORMAT])
+    if rc != 0:
+        return False, (
+            f"`gcloud projects describe {project}` failed (rc={rc}), so the refusal's project number "
+            f"could not be compared: {(err or '').strip()[:PROJECTS_LIST_ERROR_CHARS] or 'no stderr'}"
+        )
+    if numbers == {stdout.strip()}:
+        return True, ""
+    return False, f"the Kubernetes Engine API is off in a project other than {project!r}, such as a quota project"
 
 
 def get_target_projects(cli_projects: list[str] | None = None, listing_errors: list[str] | None = None) -> list[str]:
@@ -589,7 +621,10 @@ def build_report(projects: list[str], explicit_target: str | None, readiness_opt
         clusters, error = run_gcloud_json(cmd)
         if error is not None or not isinstance(clusters, list):
             if error is not None and any(marker in error for marker in API_DISABLED_MARKERS):
-                continue
+                ours, why_not = refusal_names_project(project, error)
+                if ours:
+                    continue
+                error = f"{error} ({why_not})"
             errors.append({"project": project, "location": None, "message": error or f"{' '.join(cmd)} returned no list"})
             continue
         for cluster in clusters:

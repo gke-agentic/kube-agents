@@ -248,6 +248,32 @@ class AuditComputeTest(unittest.TestCase):
         self.assertEqual(active, [])
         self.assertEqual(skipped, [])
 
+    def _refusal_run(self, own_number):
+        def fake(cmd, *args, **kwargs):
+            if cmd[:3] == ["gcloud", "projects", "describe"]:
+                return (0, f"{own_number}\n", "")
+            return (
+                1,
+                "",
+                "ERROR: (gcloud.compute.instances.list) SERVICE_DISABLED: Compute Engine API "
+                "has not been used in project 111111111111 before or it is disabled.",
+            )
+        return fake
+
+    def test_quota_project_refusal_is_a_failed_read(self):
+        """A refusal naming another project's number says nothing about this one."""
+        skipped, active = [], []
+        with patch("compute_fleet_audit.run_cmd", side_effect=self._refusal_run("222222222222")):
+            compute_fleet_audit.audit_project_compute("real-proj", skipped, active)
+        self.assertEqual(active, [])
+        self.assertEqual([t["cluster"] for t in skipped], ["project/real-proj"])
+
+    def test_own_numbered_refusal_is_empty(self):
+        skipped, active = [], []
+        with patch("compute_fleet_audit.run_cmd", side_effect=self._refusal_run("111111111111")):
+            compute_fleet_audit.audit_project_compute("real-proj", skipped, active)
+        self.assertEqual((active, skipped), ([], []))
+
 
 if __name__ == "__main__":
     unittest.main()

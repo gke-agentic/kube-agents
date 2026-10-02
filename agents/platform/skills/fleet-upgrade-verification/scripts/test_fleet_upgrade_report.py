@@ -329,6 +329,31 @@ class ProjectFailureTest(unittest.TestCase):
         self.assertEqual([m["cluster"] for m in result["members"]], ["a"])
         self.assertEqual(result["errors"], [])
 
+    def _numbered_refusal(self, own_number):
+        target = "1.31.0-gke.1"
+
+        def fake_run(cmd, *args, **kwargs):
+            joined = " ".join(cmd)
+            if cmd[:3] == ["gcloud", "projects", "describe"]:
+                return (0, f"{own_number}\n", "")
+            if "project=refused" in joined:
+                return (1, "", "ERROR: (gcloud.container.clusters.list) SERVICE_DISABLED: Kubernetes Engine API "
+                               "has not been used in project 111111111111 before or it is disabled.")
+            return (0, json.dumps([cluster("a", "us-central1", target, [("p", target)])]), "")
+
+        with patch.object(report, "run_cmd", side_effect=fake_run):
+            return report.build_report(["refused", "good"], target)
+
+    def test_quota_project_refusal_is_a_failed_read(self):
+        """A refusal naming another project's number is an error, so its members carry forward."""
+        result = self._numbered_refusal("222222222222")
+        self.assertEqual([e["project"] for e in result["errors"]], ["refused"])
+        self.assertIn("quota project", result["errors"][0]["message"])
+
+    def test_own_numbered_refusal_is_ignored(self):
+        result = self._numbered_refusal("111111111111")
+        self.assertEqual(result["errors"], [])
+
 
 class ProjectResolutionTest(unittest.TestCase):
     def test_cli_projects_win(self):

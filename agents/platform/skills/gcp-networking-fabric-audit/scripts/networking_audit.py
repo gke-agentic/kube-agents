@@ -8,6 +8,7 @@ Additional checks in governance/gcp_networking_fabric_sop.md are evaluated via S
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -44,6 +45,14 @@ API_DISABLED_MARKERS = (
     "accessNotConfigured",
     "has not been used in project",
 )
+# A disabled-API refusal names the consumer project -- by number in gcloud's
+# usual phrasing, by id in some. With a quota project set, that consumer is the
+# quota project rather than `--project`, so the marker alone cannot say whose
+# API is off. fleet_waste.refusal_owner draws the same line.
+REFUSED_PROJECT_NUMBER_RE = re.compile(r"\bprojects?[ /](\d+)\b")
+PROJECT_DESCRIBE_CMD = (GCLOUD, "projects", "describe")
+PROJECT_NUMBER_FORMAT = "--format=value(projectNumber)"
+PROJECT_FLAG = "--project"
 JSON_INDENT = 2
 
 
@@ -56,12 +65,55 @@ def run_cmd(cmd: list[str]) -> tuple[int, str, str]:
         return -1, "", str(e)
 
 
+def project_flag_value(cmd: list[str]) -> str | None:
+    """The project a gcloud argv names with `--project <id>` or `--project=<id>`."""
+    for i, arg in enumerate(cmd):
+        if arg == PROJECT_FLAG and i + 1 < len(cmd):
+            return cmd[i + 1]
+        if arg.startswith(f"{PROJECT_FLAG}="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def refusal_names_project(project: str, stderr: str) -> tuple[bool, str]:
+    """Whether an API-disabled refusal is `project`'s own, with why when it is not.
+
+    Only the project's own refusal means it holds nothing to audit. One naming
+    another project -- the credential's quota project -- says nothing about this
+    one, and read as empty it would drop the project from both `scope.clusters`
+    and `scope.skipped`. A refusal naming no project, or one whose number cannot
+    be compared with this project's, is a failed read.
+    """
+    numbers = set(REFUSED_PROJECT_NUMBER_RE.findall(stderr))
+    if not numbers:
+        if re.search(rf"\b(?i:projects?)[ /]['\"\[]?{re.escape(project)}(?![\w-])", stderr):
+            return True, ""
+        return False, f"the refusal does not name {project!r}"
+    rc, stdout, err = run_cmd([*PROJECT_DESCRIBE_CMD, project, PROJECT_NUMBER_FORMAT])
+    if rc != 0:
+        return False, (
+            f"`gcloud projects describe {project}` failed (rc={rc}), so the refusal's project number "
+            f"could not be compared: {(err or '').strip()[:ERROR_EXCERPT_CHARS] or 'no stderr'}"
+        )
+    if numbers == {stdout.strip()}:
+        return True, ""
+    return False, f"the API is off in a project other than {project!r}, such as a quota project"
+
+
 def run_gcloud_json(cmd: list[str]) -> list[dict] | dict | str | None:
-    """Runs a gcloud command and parses JSON output safely."""
+    """Runs a gcloud command and parses JSON output safely.
+
+    Returns API_DISABLED only for a refusal naming the `--project` the command
+    reads; any other failure is None, a failed read.
+    """
     rc, stdout, stderr = run_cmd(cmd)
     if rc != 0:
-        if any(marker in (stderr or "") for marker in API_DISABLED_MARKERS):
-            return API_DISABLED
+        project = project_flag_value(cmd)
+        if project and any(marker in (stderr or "") for marker in API_DISABLED_MARKERS):
+            ours, why_not = refusal_names_project(project, stderr)
+            if ours:
+                return API_DISABLED
+            stderr = f"{stderr.strip()} ({why_not})"
         sys.stderr.write(f"gcloud command failed ({rc}): {' '.join(cmd)}\n{stderr}\n")
         return None
     if not stdout.strip():

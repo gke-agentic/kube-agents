@@ -53,7 +53,9 @@ with `--readiness` one `gcloud container clusters get-credentials` and one `kube
 It changes nothing in GCP or in any cluster; the only things it writes are its own record under
 `/opt/data/state/fleet-upgrade-verification/`, the per-member kubeconfig files `--readiness`
 needs, and the `--output` file. A failed or timed-out read is listed under the table and sets
-exit code 1; the other projects, locations and members are still reported.
+exit code 1; the other projects, locations and members are still reported. A project whose own Kubernetes
+Engine API is off holds no cluster and is not a failed read; a refusal naming another project,
+such as a quota project, is one.
 
 ## Read the table
 

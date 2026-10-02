@@ -81,6 +81,32 @@ class TestNetworkingAudit(unittest.TestCase):
         self.assertEqual(active, [])
         self.assertEqual(skipped, [])
 
+    def _refusal_run(self, own_number):
+        def fake(cmd, *args, **kwargs):
+            if cmd[:3] == ["gcloud", "projects", "describe"]:
+                return (0, f"{own_number}\n", "")
+            return (
+                1,
+                "",
+                "ERROR: (gcloud.compute.forwarding-rules.list) SERVICE_DISABLED: Compute Engine API "
+                "has not been used in project 111111111111 before or it is disabled.",
+            )
+        return fake
+
+    def test_quota_project_refusal_is_a_failed_read(self):
+        """A refusal naming another project's number says nothing about this one."""
+        skipped, active = [], []
+        with patch("networking_audit.run_cmd", side_effect=self._refusal_run("222222222222")):
+            networking_audit.audit_project_networking("real-proj", skipped, active)
+        self.assertEqual(active, [])
+        self.assertEqual([t["cluster"] for t in skipped], ["project/real-proj"])
+
+    def test_own_numbered_refusal_is_empty(self):
+        skipped, active = [], []
+        with patch("networking_audit.run_cmd", side_effect=self._refusal_run("111111111111")):
+            networking_audit.audit_project_networking("real-proj", skipped, active)
+        self.assertEqual((active, skipped), ([], []))
+
 
 class MainSweepTest(unittest.TestCase):
     def test_one_denied_project_does_not_abort_the_rest(self):
