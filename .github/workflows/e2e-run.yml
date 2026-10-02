@@ -47,7 +47,7 @@ on:
       timeout_minutes:
         description: "Job timeout"
         required: false
-        default: 60
+        default: 80
         type: number
 
 jobs:
@@ -60,9 +60,9 @@ jobs:
     concurrency:
       group: ${{ inputs.github_environment }}-environment
       cancel-in-progress: false
-    # Roughly 40 of the default 60 minutes can go before the first test runs: a
+    # Roughly 60 of the default 80 minutes can go before the first test runs: a
     # fresh Autopilot cluster scaling from zero and pulling every image, then
-    # wait_for_gke_readiness.sh's litellm (420s) and gateway (900s) gates paid
+    # wait_for_gke_readiness.sh's litellm (420s) and gateway (1500s) gates paid
     # twice each, plus a 300s image-tag verification loop and the adapter build
     # ahead of it. Lower this and the job timeout fires before the tests do,
     # reporting a broken deploy rather than a slow one. Re-derive the sum from

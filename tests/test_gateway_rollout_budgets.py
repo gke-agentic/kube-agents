@@ -56,10 +56,11 @@ def rollout_gate_pattern(deployment):
         + r')"?\s[^\n]*?--timeout=(\d+)s'
     )
 
-# What the gate must have over the startupProbe budget, in seconds, for the
-# node scale-up and image pull that precede the container starting at all.
-# Matches the allowance test_hindsight_probes.py derives its gate from.
-_PULL_ALLOWANCE_SECONDS = 240
+# What the gate must have over the startupProbe budget, in seconds, for
+# Recreate termination of the previous pod plus sequential cold image pulls
+# across initContainers (platform-agent, plugins, credential-proxy) before the
+# main container starts at all. Measured at 440s (7m20s) in autopush (#2087).
+_PULL_ALLOWANCE_SECONDS = 480
 
 # Kubernetes' default when a Deployment does not set progressDeadlineSeconds.
 # Deployments with no explicit progressDeadlineSeconds rely on this default.
@@ -111,6 +112,18 @@ class GatewayRolloutBudgetTest(unittest.TestCase):
         self.startup = _gateway_startup_budget_seconds()
         self.gate = _rollout_gate_seconds(_UPGRADE_SCRIPT, "platform-agent-gateway")
         self.deadline = _gateway_progress_deadline_seconds()
+
+    def test_the_startup_budget_covers_a_cold_gvisor_boot(self):
+        # Fifteen minutes. Cold container boot under gVisor (stage2-hook chown,
+        # skill sync + provenance verification, multi-profile config generation,
+        # SSH sandbox mirroring, and Hermes Gateway startup) measured 531s-570s
+        # in autopush (#2087), leaving almost no margin under the old 605s ceiling.
+        self.assertGreaterEqual(
+            self.startup,
+            900,
+            f"a {self.startup}s startupProbe budget leaves too little headroom over "
+            "a 531s-570s cold gVisor boot (#2087)",
+        )
 
     def test_the_gate_covers_the_startup_budget_and_the_image_pull(self):
         self.assertGreaterEqual(
