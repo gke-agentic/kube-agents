@@ -218,11 +218,17 @@ profiles are registered. The gateway container already carries the install's
 ```bash
 kubectl exec -i deployment/platform-agent-gateway -n kubeagents-system \
   -c platform-agent -- bash -lc '
-    /opt/hermes/.venv/bin/python3 "$HERMES_HOME/scripts/cluster_agent_reconcile.py" &&
+    /opt/hermes/.venv/bin/python3 "$HERMES_HOME/scripts/cluster_agent_reconcile.py" --require-create-pass &&
     cat "$HERMES_HOME/fleet_scope.json" &&
     /opt/hermes/.venv/bin/hermes profile list
   '
 ```
+
+`--require-create-pass` stops the chain before it prints a snapshot this run
+did not write. Exit 4 means the hourly reconcile or the bootstrap gate holds the
+lock: retry in a minute. Exit 3 means the run could not list the host project's
+clusters, every create failed, or the run aborted; the log line above it names
+which.
 
 ## Removing a project
 

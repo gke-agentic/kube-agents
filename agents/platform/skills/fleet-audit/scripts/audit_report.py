@@ -610,11 +610,7 @@ DELTA_RE = re.compile(
 # before; these objects cannot, so those rows leave the ledger unheld on the
 # first run, and `resolved` is withheld for that run rather than reporting
 # them fixed.
-#
-# 7: the GCE compute audit names its project targets `project/<id>` rather
-# than `project-<id>`, the form every other stream uses, so its finding ids
-# move and `resolved` is withheld for the first run.
-ID_SCHEME = 7
+ID_SCHEME = 6
 # Joins a qualified cluster name's `<project>/<location>/<name>` segments.
 QUALIFIED_TARGET_SEPARATOR = "/"
 # `<project>/<location>/<name>`: the segments of a qualified cluster name.

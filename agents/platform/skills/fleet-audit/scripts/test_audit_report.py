@@ -1433,6 +1433,24 @@ class TestDerivedFindingId(unittest.TestCase):
         second = self.ids_for([make_finding(fid="b"), make_finding(fid="a")])
         self.assertEqual(sorted(first), sorted(second))
 
+    def test_gce_project_target_spellings_derive_one_id(self):
+        # The GCE audit once named its targets `project-<id>` and now writes
+        # `project/<id>`, the form every other stream uses. The segment
+        # reduction folds both to one id, so the rename moves no finding and
+        # needs no `ID_SCHEME` bump; if this fails, the rename needs one.
+        def finding(cluster):
+            return {
+                "check": "orphaned-snapshots",
+                "cluster": cluster,
+                "namespace": "",
+                "object": "Snapshot/snap-1",
+            }
+
+        self.assertEqual(
+            audit_report.derive_finding_id(finding("project-proj-1")),
+            audit_report.derive_finding_id(finding("project/proj-1")),
+        )
+
     def test_an_absent_namespace_gets_the_sentinel_not_an_empty_segment(self):
         # Cluster-scoped objects are the majority of the compliance roster. The
         # retired SOP offered `_` as the sentinel and, one line later, a
@@ -17343,8 +17361,7 @@ class TestFinishWithoutAManifestIsUnchanged(HarnessTestCase):
     qualifying cluster names, from 3 to 4 when the patch-readiness
     collector did the same, from 4 to 5 when `collect.py` did it for three
     more streams, and from 5 to 6 when `fleet_waste.py` and `fleet_stockout.py`
-    did it for cost and stockout, and from 6 to 7 when the GCE audit renamed
-    its project targets, and the stamp is global, so every stream's bodies
+    did it for cost and stockout, and the stamp is global, so every stream's bodies
     carry the current number. That is the whole of the change here -- five
     lines, one per body -- and this class is what proves it. The compliance
     roster growing from eleven checks to sixteen is recorded the same way: the
@@ -17475,40 +17492,6 @@ class TestFinishWithoutAManifestIsUnchanged(HarnessTestCase):
         rc = self.run_finish(make_doc(findings=self.two_findings()), ["--dry-run"])
         self.check("dry_run", rc)
 
-
-
-    # The scheme a ledger carried before the GCE audit renamed its project
-    # targets. A literal, so reverting the bump fails the test below.
-    SCHEME_BEFORE_GCE_PROJECT_TARGETS = 6
-
-    def test_previous_scheme_bare_cluster_names_withhold_resolved(self):
-        previous_body = published_body(
-            make_doc(findings=[make_finding(fid="a", cluster="prod-us-east", title="Alpha finding")]),
-            generated_at=NOW,
-        ).replace(
-            f"<!-- audit-id-scheme: {audit_report.ID_SCHEME} -->",
-            f"<!-- audit-id-scheme: {self.SCHEME_BEFORE_GCE_PROJECT_TARGETS} -->",
-        )
-        self.assertEqual(
-            audit_report.parse_id_scheme(previous_body), self.SCHEME_BEFORE_GCE_PROJECT_TARGETS
-        )
-        self.harness.replies = {
-            "issue list": self.issue_list(),
-            "--json body": json.dumps({"body": previous_body}),
-        }
-        qualified_doc = make_doc(
-            clusters=[{"name": "acme-prod/us-east1/prod-us-east", "location": "us-east1", "project": "acme-prod"}],
-            findings=[
-                make_finding(
-                    fid="a",
-                    cluster="acme-prod/us-east1/prod-us-east",
-                    title="Alpha finding",
-                )
-            ],
-        )
-        rc = self.run_finish(qualified_doc)
-        self.assertEqual(rc, 0, self.err)
-        self.assertEqual(self.stdout_json()["resolved"], 0)
 
 
 class TestReportStore(HarnessTestCase):
