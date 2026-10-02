@@ -313,6 +313,77 @@ def _rollback_constant_seconds(name):
     return int(match.group(1))
 
 
+_UPGRADE_MODES = frozenset({"operator", "harness", "full"})
+
+
+def _post_upgrade_waits_by_mode():
+    """Every serial wait upgrade.sh's "5. Post-Upgrade Health Verification"
+    block pays, bucketed by the --upgrade-mode that reaches it.
+
+    Read off the script rather than listed here: each `kubectl rollout status
+    ... --timeout=` and `confirm_agent_image.sh` call is attributed to the
+    modes named by the enclosing `if` guards, and a guard that names no mode
+    (only `kubectl get <object>`, which exists on a running install) bills
+    every mode. `restarted_agent` is the operator arm's own flag, so a wait
+    behind it bills the operator mode. Returns {mode: [(label, seconds), ...]}.
+    """
+    text = _UPGRADE_SCRIPT.read_text()
+    block = re.search(
+        r'print_step "5\. Post-Upgrade Health Verification".*?print_success "Upgraded deployments verified healthy\."',
+        text,
+        re.DOTALL,
+    )
+    assert block, "could not find the step-5 post-upgrade block in upgrade.sh"
+    confirm_image = _confirm_agent_image_timeout_seconds()
+    sandbox_gate = _sandbox_rollout_timeout_seconds()
+
+    # Join `\`-continued lines so a multi-line guard is read as one condition.
+    lines = re.sub(r"\\\n\s*", " ", block.group(0)).splitlines()
+    waits = {mode: [] for mode in _UPGRADE_MODES}
+    guards = []
+    for raw in lines:
+        line = raw.strip()
+        if line.startswith("if "):
+            guards.append(line)
+            continue
+        if line == "fi":
+            assert guards, "unbalanced fi in upgrade.sh step-5 block"
+            guards.pop()
+            continue
+
+        gate = re.search(
+            r'kubectl rollout status "(?P<target>[^"]+)"[^\n]*?--timeout="?(?P<timeout>[^"\s]+)"?',
+            line,
+        )
+        confirm = "confirm_agent_image.sh" in line
+        if not gate and not confirm:
+            continue
+
+        modes = set(_UPGRADE_MODES)
+        for guard in guards:
+            named = set(re.findall(r'"\$PARAM_UPGRADE_MODE" = "(\w+)"', guard))
+            if "restarted_agent" in guard:
+                named.add("operator")
+            if named:
+                modes &= named
+        if confirm:
+            for mode in modes:
+                waits[mode].append(("confirm_agent_image.sh", confirm_image))
+            continue
+
+        timeout = gate.group("timeout")
+        if timeout == "$SANDBOX_ROLLOUT_TIMEOUT":
+            seconds = sandbox_gate
+        else:
+            numeric = re.fullmatch(r"(\d+)s", timeout)
+            assert numeric, f"unrecognised --timeout {timeout!r} in upgrade.sh step-5 block"
+            seconds = int(numeric.group(1))
+        for mode in modes:
+            waits[mode].append((gate.group("target"), seconds))
+    assert not guards, "unbalanced if in upgrade.sh step-5 block"
+    return waits
+
+
 class SiblingGatewayRolloutGatesTest(unittest.TestCase):
     """Other callers that wait on a cold gateway rollout or run wait_for_gke_readiness.sh."""
 
@@ -421,23 +492,42 @@ class SiblingGatewayRolloutGatesTest(unittest.TestCase):
                     f"modelled readiness gates + setup + suite floor ({required_seconds}s)",
                 )
 
-    def test_upgrade_workflow_timeouts_cover_serial_rollout_gates(self):
-        controller_gate = _rollout_gate_seconds(
-            _UPGRADE_SCRIPT, "kube-agents-controller-manager"
-        )
-        gateway_gate = _rollout_gate_seconds(_UPGRADE_SCRIPT, "platform-agent-gateway")
-        confirm_image = _confirm_agent_image_timeout_seconds()
+    def test_the_step_5_parser_sees_every_mode_gate(self):
+        # Guards the parser the floor below rests on: the sandbox waits are
+        # guarded only on the object existing, so every mode pays them; the
+        # gateway gate reaches the operator mode through restarted_agent; and
+        # confirm_agent_image.sh is a harness/full wait only.
+        waits = _post_upgrade_waits_by_mode()
         sandbox_gate = _sandbox_rollout_timeout_seconds()
+        gateway_gate = _rollout_gate_seconds(_UPGRADE_SCRIPT, "platform-agent-gateway")
+        for mode in sorted(_UPGRADE_MODES):
+            with self.subTest(mode=mode):
+                seconds = [s for _, s in waits[mode]]
+                self.assertEqual(seconds.count(sandbox_gate), 2, f"{mode}: {waits[mode]}")
+                self.assertIn(gateway_gate, seconds, f"{mode}: {waits[mode]}")
+        labels = {mode: [label for label, _ in waits[mode]] for mode in _UPGRADE_MODES}
+        self.assertNotIn("confirm_agent_image.sh", labels["operator"])
+        self.assertIn("confirm_agent_image.sh", labels["harness"])
+        self.assertIn("confirm_agent_image.sh", labels["full"])
+
+    def test_upgrade_workflow_timeouts_cover_serial_rollout_gates(self):
+        # Each --upgrade-mode's serial waits are the Helm wait its arm pays
+        # (helm_retag for operator/harness, the Terraform helm_release timeout
+        # for full) plus whatever upgrade.sh's step-5 block gates in that mode,
+        # read off the script by _post_upgrade_waits_by_mode.
         helm_wait = _terraform_helm_timeout_seconds()
         helm_retag = _helm_retag_timeout_seconds()
+        step_5 = {mode: sum(s for _, s in gates) for mode, gates in _post_upgrade_waits_by_mode().items()}
         rollback_ready = _rollback_constant_seconds("READY_TIMEOUT_SECONDS")
         rollback_operator_scale = _rollback_constant_seconds("OPERATOR_SCALE_TIMEOUT_SECONDS")
         rollback_image_confirm = _rollback_constant_seconds("IMAGE_CONFIRM_TIMEOUT_SECONDS")
 
-        harness_waits = confirm_image + gateway_gate + 2 * sandbox_gate
-        full_upgrade_waits = helm_wait + controller_gate + harness_waits
-        operator_move_waits = helm_retag + controller_gate
-        harness_move_waits = helm_retag + harness_waits
+        full_upgrade_waits = helm_wait + step_5["full"]
+        operator_move_waits = helm_retag + step_5["operator"]
+        harness_move_waits = helm_retag + step_5["harness"]
+        # rollback_environment.sh: two operator + two harness moves, the
+        # litellm-policy handoff's scale-down and restart gates, and two
+        # assert_running checks (two image confirmations + rollout + Ready).
         assert_running_waits = 2 * rollback_image_confirm + 2 * rollback_ready
         rollback_leg_waits = (
             2 * operator_move_waits
@@ -462,7 +552,8 @@ class SiblingGatewayRolloutGatesTest(unittest.TestCase):
             rollback_sec,
             rollback_leg_waits,
             f"step-3b-rollback-leg ({rollback_sec}s) leaves no room past "
-            f"rollback_environment.sh's {rollback_leg_waits}s of serial waits",
+            f"rollback_environment.sh's {rollback_leg_waits}s of serial waits "
+            f"(operator move {operator_move_waits}s, harness move {harness_move_waits}s)",
         )
 
 
