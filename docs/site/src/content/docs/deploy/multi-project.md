@@ -16,9 +16,11 @@ installer then binds the read roles in that project and declares it in
 `spec.scope`, so Terraform owns the bindings and revokes them when the project is
 removed (see [Installer-managed installs](#installer-managed-installs)).
 `SCOPE_FOLDERS` and `SCOPE_ORGANIZATIONS` do the same for a folder or
-organisation, whose bindings every project beneath it inherits. Without any of
-the three the installer binds the service account in the host project alone,
-and the grants in other projects are yours to make by hand, as the steps below
+organisation, whose bindings every project beneath it inherits, and
+`SCOPE_SHARED_VPC_HOSTS` and `SCOPE_METRICS_SCOPES` bind the roles in every
+project a Shared VPC host or Metrics Scope resolves to. Without any of these
+the installer binds the service account in the host project alone, and the
+grants in other projects are yours to make by hand, as the steps below
 describe.
 
 Once IAM access is granted, the two layers of the harness discover projects

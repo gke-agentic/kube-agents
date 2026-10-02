@@ -22,10 +22,10 @@ exclusion in effect whose scope covers the upgrade, the maintenance window's sta
 `upgrade_readiness.py`; this file reads and renders.
 
 Read-only against GCP: the gcloud commands it runs are `container clusters list`,
-`container get-server-config`, `config get-value project` and, with `--readiness`,
-`container clusters get-credentials`. The only things it writes are its own state file,
-the per-target kubeconfig files `get-credentials` produces, and the optional `--output`
-JSON.
+`container get-server-config`, `projects list`, `config get-value project` and, with
+`--readiness`, `container clusters get-credentials`. The only things it writes are its
+own state file, the per-target kubeconfig files `get-credentials` produces, and the
+optional `--output` JSON.
 """
 
 import argparse
@@ -39,9 +39,10 @@ from datetime import datetime, timezone
 
 import upgrade_readiness as readiness
 
-# Project resolution, in the order networking_audit.py and the fleet SOPs use it:
-# explicit --project flags, then the fleet's monitored-project list, then the
-# per-profile project variables, then gcloud's configured default.
+# Project resolution: explicit --project flags are the whole scope. Otherwise the
+# per-profile project variables are unioned with the fleet's monitored-project list
+# when it is set, or with gcloud's configured project and every project
+# `gcloud projects list` returns when it is unset or blank.
 MONITORED_PROJECTS_ENV = "MONITORED_PROJECT_IDS"
 PROJECT_ENV_VARS = ("GCP_PROJECT_ID", "GKE_PROJECT_ID", "PROJECT_ID")
 GCLOUD = "gcloud"
@@ -263,7 +264,7 @@ def run_gcloud_json(cmd: list[str]) -> tuple[list | dict | None, str | None]:
 
 
 def get_target_projects(cli_projects: list[str] | None = None, listing_errors: list[str] | None = None) -> list[str]:
-    """Resolves the projects to enumerate; --project wins, then env, then gcloud.
+    """Resolves the projects to enumerate; --project wins, else env unioned with discovery.
 
     A failed `gcloud projects list` is appended to `listing_errors` when the
     caller passes one, so the narrowed scope reads as a failed read rather than
