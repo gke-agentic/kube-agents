@@ -28,10 +28,13 @@ import pathlib
 import re
 import unittest
 
+import yaml
+
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _MANIFESTS_GO = _ROOT / "k8s-operator" / "internal" / "controller" / "platformagent_manifests.go"
 _UPGRADE_SCRIPT = _ROOT / "upgrade.sh"
 _READINESS_SCRIPT = _ROOT / "scripts" / "release" / "wait_for_gke_readiness.sh"
+_CONFIRM_IMAGE_SCRIPT = _ROOT / "scripts" / "confirm_agent_image.sh"
 # Where the front doors' constants for the chart's fixed object names live.
 # upgrade.sh spells a Deployment through one of them ("deployment/${NAME}"),
 # so a gate is matched by the literal name or by any constant that holds it.
@@ -253,6 +256,28 @@ class UpgradeRolloutGateTest(unittest.TestCase):
         )
 
 
+# Fixed runner setup (checkout, setup-python, install_e2e_deps.sh, setup-gcloud,
+# get-gke-credentials) before wait_for_gke_readiness.sh starts.
+_E2E_RUNNER_SETUP_SECONDS = 300
+# Post-readiness test execution allowance for the RC gate (blocking `gchat` plus
+# optional `rc`, where the stockout fixture claims 600s and scenario 04 watches
+# for 360s) and for `--suite all` across all five E2E test files (matching the
+# 60-minute suite budget in staging-promotion-pipeline.yml).
+_E2E_RC_SUITE_ALLOWANCE_SECONDS = 1200
+_E2E_ALL_SUITES_ALLOWANCE_SECONDS = 3600
+
+
+def _confirm_agent_image_timeout_seconds():
+    """Default timeout of scripts/confirm_agent_image.sh, called when COMMIT_SHA is set."""
+    match = re.search(
+        r'^timeout="\$\{AGENT_IMAGE_CONFIRM_TIMEOUT:-(\d+)\}"$',
+        _CONFIRM_IMAGE_SCRIPT.read_text(),
+        re.MULTILINE,
+    )
+    assert match, "could not find AGENT_IMAGE_CONFIRM_TIMEOUT default in confirm_agent_image.sh"
+    return int(match.group(1))
+
+
 class SiblingGatewayRolloutGatesTest(unittest.TestCase):
     """Other callers that wait on a cold gateway rollout or run wait_for_gke_readiness.sh."""
 
@@ -290,16 +315,43 @@ class SiblingGatewayRolloutGatesTest(unittest.TestCase):
         self.assertGreaterEqual(plugins_sec, self.startup + _PULL_ALLOWANCE_SECONDS)
         self.assertLess(plugins_sec, self.deadline)
 
-    def test_e2e_manual_runner_timeout_covers_readiness_gates_paid_twice(self):
-        workflow = (_ROOT / ".github" / "workflows" / "e2e-manual-runner.yml").read_text()
-        match = re.search(r"^\s*timeout-minutes:\s*(\d+)\s*$", workflow, re.MULTILINE)
-        self.assertIsNotNone(match)
-        job_seconds = int(match.group(1)) * 60
+    def test_e2e_workflow_timeouts_cover_readiness_gates_and_suites(self):
         gateway_gate = _readiness_gate_seconds(
             "platform-agent-gateway", "GATEWAY_READINESS_TIMEOUT"
         )
         litellm_gate = _readiness_gate_seconds("litellm", "LITELLM_READINESS_TIMEOUT")
-        self.assertGreater(job_seconds, 2 * (gateway_gate + litellm_gate))
+        gates_paid_twice = 2 * (gateway_gate + litellm_gate)
+        confirm_image = _confirm_agent_image_timeout_seconds()
+
+        callers = (
+            (
+                "e2e-run.yml",
+                lambda doc: doc[True]["workflow_call"]["inputs"]["timeout_minutes"].get("default"),
+                gates_paid_twice
+                + confirm_image
+                + _E2E_RUNNER_SETUP_SECONDS
+                + _E2E_RC_SUITE_ALLOWANCE_SECONDS,
+            ),
+            (
+                "e2e-manual-runner.yml",
+                lambda doc: doc["jobs"]["run-e2e"].get("timeout-minutes"),
+                gates_paid_twice
+                + _E2E_RUNNER_SETUP_SECONDS
+                + _E2E_ALL_SUITES_ALLOWANCE_SECONDS,
+            ),
+        )
+        for workflow_name, extract_minutes, required_seconds in callers:
+            with self.subTest(workflow=workflow_name):
+                doc = yaml.safe_load((_ROOT / ".github" / "workflows" / workflow_name).read_text())
+                minutes = extract_minutes(doc)
+                self.assertIsNotNone(minutes, f"{workflow_name} has no job timeout")
+                job_seconds = int(minutes) * 60
+                self.assertGreaterEqual(
+                    job_seconds,
+                    required_seconds,
+                    f"{workflow_name} timeout ({minutes}m = {job_seconds}s) is below the "
+                    f"modelled readiness gates + setup + suite floor ({required_seconds}s)",
+                )
 
 
 if __name__ == "__main__":
