@@ -26,7 +26,10 @@ uses.
 
 import pathlib
 import re
+import sys
+import tempfile
 import unittest
+from unittest import mock
 
 import yaml
 
@@ -326,6 +329,13 @@ def _post_upgrade_waits_by_mode():
     (only `kubectl get <object>`, which exists on a running install) bills
     every mode. `restarted_agent` is the operator arm's own flag, so a wait
     behind it bills the operator mode. Returns {mode: [(label, seconds), ...]}.
+
+    Fails closed. The parser models exactly `if ...; then` / `fi` and a gate
+    spelled `kubectl rollout status "<target>" ... --timeout=`; a shape it
+    does not model (`elif`, `else`, `case`, a negated mode test, an unquoted
+    target, `--timeout 120s`, `kubectl wait`) raises naming the line rather
+    than billing the wait to the wrong modes or to none, since the floor this
+    feeds exists to catch exactly a wait that is paid but not counted.
     """
     text = _UPGRADE_SCRIPT.read_text()
     block = re.search(
@@ -341,9 +351,21 @@ def _post_upgrade_waits_by_mode():
     lines = re.sub(r"\\\n\s*", " ", block.group(0)).splitlines()
     waits = {mode: [] for mode in _UPGRADE_MODES}
     guards = []
+    timed_lines = 0
+    attributed = 0
     for raw in lines:
         line = raw.strip()
+        if line.startswith("#"):
+            continue
+        unmodelled = re.match(r"(elif|else|case|while|until|for)\b", line)
+        assert not unmodelled, (
+            f"upgrade.sh step-5 block uses `{unmodelled.group(1)}`, which "
+            f"_post_upgrade_waits_by_mode does not model; extend the parser: {line!r}"
+        )
         if line.startswith("if "):
+            assert not re.search(r'!\s*\[[^]]*\$PARAM_UPGRADE_MODE', line), (
+                f"negated --upgrade-mode test is not modelled: {line!r}"
+            )
             guards.append(line)
             continue
         if line == "fi":
@@ -351,13 +373,21 @@ def _post_upgrade_waits_by_mode():
             guards.pop()
             continue
 
+        is_timed = "--timeout" in line or line.startswith("kubectl wait")
+        timed_lines += is_timed
         gate = re.search(
             r'kubectl rollout status "(?P<target>[^"]+)"[^\n]*?--timeout="?(?P<timeout>[^"\s]+)"?',
             line,
         )
         confirm = "confirm_agent_image.sh" in line
         if not gate and not confirm:
+            assert not is_timed, (
+                f"a timed wait in upgrade.sh's step-5 block is not in a shape "
+                f"_post_upgrade_waits_by_mode reads (quoted `kubectl rollout status` with "
+                f"`--timeout=`): {line!r}"
+            )
             continue
+        attributed += 1
 
         modes = set(_UPGRADE_MODES)
         for guard in guards:
@@ -381,6 +411,11 @@ def _post_upgrade_waits_by_mode():
         for mode in modes:
             waits[mode].append((gate.group("target"), seconds))
     assert not guards, "unbalanced if in upgrade.sh step-5 block"
+    # confirm_agent_image.sh carries its timeout inside the script, so it is
+    # attributed without a --timeout on the line; every --timeout line must be.
+    assert timed_lines <= attributed, (
+        f"{timed_lines} timed waits in upgrade.sh's step-5 block but only {attributed} attributed"
+    )
     return waits
 
 
@@ -509,6 +544,35 @@ class SiblingGatewayRolloutGatesTest(unittest.TestCase):
         self.assertNotIn("confirm_agent_image.sh", labels["operator"])
         self.assertIn("confirm_agent_image.sh", labels["harness"])
         self.assertIn("confirm_agent_image.sh", labels["full"])
+
+    def test_the_step_5_parser_refuses_shapes_it_does_not_model(self):
+        # The parser re-implements a slice of bash, and every input its grammar
+        # admits without handling lands as a wait that is paid but not counted.
+        # So each such shape has to raise naming the line, not pass quietly.
+        original = _UPGRADE_SCRIPT.read_text()
+        gateway = 'kubectl rollout status "deployment/${PLATFORM_AGENT_DEPLOYMENT}" -n "$target_namespace" --timeout=1500s'
+        statefulset_guard = '  if kubectl get statefulset "$PLATFORM_AGENT_SHELL_STATEFULSET"'
+        self.assertIn(gateway, original)
+        self.assertIn(statefulset_guard, original)
+        mutations = {
+            "elif": (statefulset_guard, '  elif [ "$PARAM_UPGRADE_MODE" = "operator" ]; then\n    true\n  fi\n' + statefulset_guard),
+            "else": ('    kubectl rollout status "statefulset/', '    true\n  else\n    kubectl rollout status "statefulset/'),
+            "case": ('  print_success "Upgraded deployments verified healthy."', '  case "$PARAM_UPGRADE_MODE" in operator) true;; esac\n  print_success "Upgraded deployments verified healthy."'),
+            "negated mode test": ('  if [ "$PARAM_UPGRADE_MODE" = "operator" ] || [ "$PARAM_UPGRADE_MODE" = "full" ]; then', '  if ! [ "$PARAM_UPGRADE_MODE" = "operator" ]; then'),
+            "unquoted target": (gateway, gateway.replace('"deployment/${PLATFORM_AGENT_DEPLOYMENT}"', "deployment/${PLATFORM_AGENT_DEPLOYMENT}")),
+            "--timeout space form": (gateway, gateway.replace("--timeout=1500s", "--timeout 1500s")),
+            "kubectl wait": (gateway, gateway + '\n    kubectl wait --for=condition=Ready pod -l app=x -n "$target_namespace" --timeout=600s'),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            mutated = pathlib.Path(tmp) / "upgrade.sh"
+            for shape, (old, new) in mutations.items():
+                with self.subTest(shape=shape):
+                    text = original.replace(old, new, 1)
+                    self.assertNotEqual(text, original, f"mutation {shape} did not apply")
+                    mutated.write_text(text)
+                    with mock.patch.object(sys.modules[__name__], "_UPGRADE_SCRIPT", mutated):
+                        with self.assertRaises(AssertionError, msg=f"{shape} was parsed silently"):
+                            _post_upgrade_waits_by_mode()
 
     def test_upgrade_workflow_timeouts_cover_serial_rollout_gates(self):
         # Each --upgrade-mode's serial waits are the Helm wait its arm pays
