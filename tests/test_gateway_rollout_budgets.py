@@ -253,5 +253,54 @@ class UpgradeRolloutGateTest(unittest.TestCase):
         )
 
 
+class SiblingGatewayRolloutGatesTest(unittest.TestCase):
+    """Other callers that wait on a cold gateway rollout or run wait_for_gke_readiness.sh."""
+
+    def setUp(self):
+        self.startup = _gateway_startup_budget_seconds()
+        self.deadline = _gateway_progress_deadline_seconds()
+
+    def test_gitops_pilot_gateway_gates_cover_startup_and_stay_under_deadline(self):
+        pilot = (_ROOT / "bench" / "hack" / "run-gitops-pilot.sh").read_text()
+        for name in ("CR_READY_TIMEOUT", "GATEWAY_ROLLOUT_TIMEOUT"):
+            with self.subTest(constant=name):
+                match = re.search(rf"^readonly {name}=(\d+)s$", pilot, re.MULTILINE)
+                self.assertIsNotNone(match, f"could not find readonly {name} in run-gitops-pilot.sh")
+                seconds = int(match.group(1))
+                self.assertGreaterEqual(seconds, self.startup + _PULL_ALLOWANCE_SECONDS)
+                self.assertLess(seconds, self.deadline)
+
+    def test_e2e_gateway_rollout_defaults_cover_startup_and_stay_under_deadline(self):
+        gchat = (_ROOT / "tests" / "e2e" / "gchat_agent_test.py").read_text()
+        gchat_match = re.search(
+            r'GATEWAY_ROLLOUT_TIMEOUT_SEC:\s*int\s*=\s*int\(os\.environ\.get\("GATEWAY_ROLLOUT_TIMEOUT_SEC",\s*"(\d+)"\)\)',
+            gchat,
+        )
+        self.assertIsNotNone(gchat_match)
+        gchat_sec = int(gchat_match.group(1))
+        self.assertGreaterEqual(gchat_sec, self.startup + _PULL_ALLOWANCE_SECONDS)
+        self.assertLess(gchat_sec, self.deadline)
+
+        plugins = (_ROOT / "tests" / "e2e" / "operator" / "agentplugins_e2e_test.py").read_text()
+        plugins_match = re.search(
+            r"^DEFAULT_ROLLOUT_TIMEOUT_SEC:\s*int\s*=\s*(\d+)$", plugins, re.MULTILINE
+        )
+        self.assertIsNotNone(plugins_match)
+        plugins_sec = int(plugins_match.group(1))
+        self.assertGreaterEqual(plugins_sec, self.startup + _PULL_ALLOWANCE_SECONDS)
+        self.assertLess(plugins_sec, self.deadline)
+
+    def test_e2e_manual_runner_timeout_covers_readiness_gates_paid_twice(self):
+        workflow = (_ROOT / ".github" / "workflows" / "e2e-manual-runner.yml").read_text()
+        match = re.search(r"^\s*timeout-minutes:\s*(\d+)\s*$", workflow, re.MULTILINE)
+        self.assertIsNotNone(match)
+        job_seconds = int(match.group(1)) * 60
+        gateway_gate = _readiness_gate_seconds(
+            "platform-agent-gateway", "GATEWAY_READINESS_TIMEOUT"
+        )
+        litellm_gate = _readiness_gate_seconds("litellm", "LITELLM_READINESS_TIMEOUT")
+        self.assertGreater(job_seconds, 2 * (gateway_gate + litellm_gate))
+
+
 if __name__ == "__main__":
     unittest.main()
