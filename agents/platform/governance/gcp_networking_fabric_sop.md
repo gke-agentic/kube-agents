@@ -31,7 +31,7 @@ If `pending_remediation_requests` is non-empty, inspect each requested finding i
 
 ```bash
 HOST=$(gcloud config get-value project)
-LISTED=$(gcloud projects list --format="value(projectId)"); LIST_RC=$?
+LISTED=$(gcloud projects list --format="value(projectId)")
 PROJECTS=$(printf '%s\n' "$HOST" $LISTED | sort -u)
 for PROJECT in $PROJECTS; do
   gcloud compute networks subnets list --project="$PROJECT" --format=json

@@ -217,6 +217,33 @@ class ProjectResolutionTest(unittest.TestCase):
             self.assertEqual(compute_fleet_audit.get_target_projects(None, errors), ["p-extra", "p-host"])
         self.assertEqual(errors, [])
 
+    def test_numeric_project_id_describe_failure_records_error_without_double_auditing(self):
+        env = {
+            compute_fleet_audit.MONITORED_PROJECTS_ENV: "",
+            "GCP_PROJECT_ID": "123456789012",
+            "GKE_PROJECT_ID": "",
+            "PROJECT_ID": "",
+        }
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["gcloud", "projects", "describe"]:
+                return (1, "", "PERMISSION_DENIED: resourcemanager.projects.get denied")
+            if "config" in cmd:
+                return (0, "p-host\n", "")
+            if "projects" in cmd and "list" in cmd:
+                return (0, "p-host\np-extra\n", "")
+            return (0, "", "")
+
+        errors: list[str] = []
+        with patch.dict(os.environ, env, clear=False), patch.object(
+            compute_fleet_audit, "run_cmd", side_effect=fake_run
+        ):
+            self.assertEqual(compute_fleet_audit.get_target_projects(None, errors), ["p-extra", "p-host"])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("gcloud projects describe 123456789012", errors[0])
+        self.assertIn("PERMISSION_DENIED", errors[0])
+        self.assertNotIn("listing is filtered", errors[0])
+
 
 class AuditComputeTest(unittest.TestCase):
     @patch("compute_fleet_audit.run_gcloud_json")

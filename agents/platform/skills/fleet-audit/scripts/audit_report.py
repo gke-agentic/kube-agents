@@ -2852,7 +2852,7 @@ def validate_findings(data: object, audit_id: str) -> dict:
                 "reference a cluster by this name, so two clusters sharing one "
                 "name cannot be told apart — their findings would merge into a "
                 "single identity and the ledger would under-report. Qualify "
-                "every cluster name with its project, as the SOP's §1 "
+                "every cluster name with its project, as the SOP "
                 "requires, which keeps a multi-project run unambiguous."
             )
         audited_names.add(name)

@@ -49,7 +49,8 @@ Neither reads versions against a target.
 
 The script runs `gcloud container clusters list`, `gcloud container get-server-config`,
 `gcloud projects list` and `gcloud config get-value project` (plus `gcloud projects describe` for a
-project whose `clusters list` was refused as API-disabled), each with a 60-second timeout, and
+project whose `clusters list` was refused as API-disabled or whose configured identifier is a
+project number), each with a 60-second timeout, and
 with `--readiness` one `gcloud container clusters get-credentials` and one `kubectl get` per member.
 It changes nothing in GCP or in any cluster; the only things it writes are its own record under
 `/opt/data/state/fleet-upgrade-verification/`, the per-member kubeconfig files `--readiness`

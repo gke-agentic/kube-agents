@@ -23,7 +23,8 @@ exclusion in effect whose scope covers the upgrade, the maintenance window's sta
 
 Read-only against GCP: the gcloud commands it runs are `container clusters list`,
 `container get-server-config`, `projects list`, `config get-value project`, `projects
-describe` (only to tie an API-disabled refusal to its project) and, with
+describe` (to tie an API-disabled refusal to its project or resolve a numeric project
+number to its projectId) and, with
 `--readiness`, `container clusters get-credentials`. The only things it writes are its
 own state file, the per-target kubeconfig files `get-credentials` produces, and the
 optional `--output` JSON.
@@ -296,13 +297,20 @@ def refusal_names_project(project: str, stderr: str) -> tuple[bool, str]:
     return False, f"the Kubernetes Engine API is off in a project other than {project!r}, such as a quota project"
 
 
-def _normalise_project_id(project: str) -> str:
+def _normalise_project_id(project: str, listing_errors: list[str] | None = None) -> str | None:
     """Resolves a numeric project number (e.g. from spec.harness.projectId) to its projectId."""
     if not project.isdigit():
         return project
-    rc, stdout, _ = run_cmd([*PROJECT_DESCRIBE_CMD, project, PROJECT_ID_FORMAT])
-    resolved = stdout.strip() if rc == 0 else ""
-    return resolved or project
+    rc, stdout, stderr = run_cmd([*PROJECT_DESCRIBE_CMD, project, PROJECT_ID_FORMAT])
+    if rc == 0 and stdout.strip():
+        return stdout.strip()
+    if listing_errors is not None:
+        listing_errors.append(
+            f"`gcloud projects describe {project}` rc={rc}: "
+            f"{(stderr or '').strip()[:PROJECTS_LIST_ERROR_CHARS] or 'no stderr'}; "
+            "numeric project could not be resolved to a projectId"
+        )
+    return None
 
 
 def get_target_projects(cli_projects: list[str] | None = None, listing_errors: list[str] | None = None) -> list[str]:
@@ -314,24 +322,28 @@ def get_target_projects(cli_projects: list[str] | None = None, listing_errors: l
     configured project: it is filtered, not complete, as fleet_drift.py treats it.
     """
     if cli_projects:
-        return sorted({_normalise_project_id(p.strip()) for p in cli_projects if p.strip()})
+        return sorted({_normalise_project_id(p.strip()) or p.strip() for p in cli_projects if p.strip()})
 
     # Parsed before it is tested, so a blank or separator-only value reads as
     # unset rather than as an override that names nothing and skips discovery.
     monitored = set(os.environ.get(MONITORED_PROJECTS_ENV, "").replace(",", " ").split())
-    projects = set(monitored)
+    raw_projects = set(monitored)
     for env_var in PROJECT_ENV_VARS:
         val = os.environ.get(env_var, "").strip()
         if val:
-            projects.add(val)
+            raw_projects.add(val)
     if monitored:
-        return sorted({_normalise_project_id(p) for p in projects})
+        return sorted({_normalise_project_id(p) or p for p in raw_projects})
     # The host project is always in a discovered scope, whether or not a
     # `GCP_PROJECT_ID`-style variable also names one.
     rc, stdout, _ = run_cmd(list(CONFIG_PROJECT_CMD))
     if rc == 0 and stdout.strip():
-        projects.add(stdout.strip())
-    projects = {_normalise_project_id(p) for p in projects}
+        raw_projects.add(stdout.strip())
+    projects = {
+        resolved
+        for p in sorted(raw_projects)
+        if (resolved := _normalise_project_id(p, listing_errors)) is not None
+    }
     rc, stdout, stderr = run_cmd(list(PROJECTS_LIST_CMD))
     if rc != 0 and listing_errors is not None:
         listing_errors.append(
@@ -347,7 +359,7 @@ def get_target_projects(cli_projects: list[str] | None = None, listing_errors: l
                 "so other projects may not have been read"
             )
         projects |= listed
-    return sorted(projects)
+    return sorted(projects or raw_projects)
 
 
 def parse_version(text: str | None) -> tuple[int, int, int, int] | None:
