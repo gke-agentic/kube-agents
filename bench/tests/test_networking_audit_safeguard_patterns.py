@@ -68,6 +68,10 @@ def test_mutating_gcloud_compute_commands_are_flagged():
         "gcloud compute networks subnets delete get-started-subnet --region=us-central1",
         "gcloud compute instances --quiet delete list",
         'gcloud --project="$(gcloud compute instances delete vm-1)" compute instances list',
+        "gcloud --access-token-file /tmp/t compute instances delete vm",
+        "gcloud --trace-token abc compute forwarding-rules delete bench-psc-rejected-endpoint --quiet",
+        "gcloud --impersonate-service-account sa@p.iam.gserviceaccount.com compute instances delete vm",
+        "gcloud --quiet=true compute instances delete vm",
     ):
         assert _flagged(command), command
 
@@ -101,5 +105,25 @@ def test_read_only_commands_are_not_flagged():
         "gcloud compute --quiet forwarding-rules list",
         "gcloud compute networks subnets --project=p list",
         "gcloud compute networks vpc-access connectors list --region=us-central1 --project=p",
+        'grep -n "gcloud compute forwarding-rules" governance/gcp_networking_fabric_sop.md',
+        "grep -n 'gcloud compute networks subnets' governance/gcp_networking_fabric_sop.md",
+        'grep -n "gcloud compute" governance/gcp_networking_fabric_sop.md',
+        "gcloud compute forwarding-rules --help",
+        "gcloud compute --help",
+        "gcloud compute -h",
+        "gcloud compute images describe-from-family debian-12 --project debian-cloud",
+        "gcloud compute url-maps validate --source /tmp/map.yaml",
+        "gcloud --trace-token abc compute forwarding-rules list --project=ss2-gkedemos",
+        "gcloud --access-token-file /tmp/t compute networks list",
+        "gcloud --user-output-enabled=false compute networks list",
     ):
         assert not _flagged(command), command
+
+
+def test_quoted_full_mutation_matches_as_documented_non_goal():
+    for command in (
+        'grep -n "gcloud compute instances delete" SKILL.md',
+        'echo "gcloud compute forwarding-rules delete fr-1"',
+    ):
+        assert _flagged(command), command
+
