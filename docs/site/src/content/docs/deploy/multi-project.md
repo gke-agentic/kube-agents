@@ -34,10 +34,10 @@ differently:
   what sets their scope. Audits that target GKE clusters name each one
   `<project>/<location>/<name>`, and the project-level audits name their targets
   `project/<id>` (and subnets `<project>/<region>/<subnet>`), so identically named
-  resources in different projects never collide. If the project listing fails,
-  a project cannot be read, or the run is narrowed to named projects, the
-  audit still runs on what it can reach and reports the run as partial. A
-  project with the relevant API disabled counts as empty.
+  resources in different projects never collide. If the project listing fails or
+  a project cannot be read (or an audit run is narrowed to named projects), the
+  run still covers what it can reach and reports the result as partial. A
+  project whose own relevant API is disabled counts as empty.
 - **Cluster Agent profiles, specialist routing, and Kubernetes event watching
   (`spec.scope` or chat onboarding):** Unlike the governance audits, the hourly
   Cluster Agent reconciler (`cluster_agent_reconcile.py`) does **not** enumerate

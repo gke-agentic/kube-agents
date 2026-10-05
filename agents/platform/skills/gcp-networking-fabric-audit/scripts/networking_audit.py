@@ -15,7 +15,8 @@ import sys
 MONITORED_PROJECTS_ENV = "MONITORED_PROJECT_IDS"
 PROJECT_ENV_VARS = ("GCP_PROJECT_ID", "GKE_PROJECT_ID", "PROJECT_ID")
 GCLOUD = "gcloud"
-PROJECTS_LIST_CMD = (GCLOUD, "projects", "list", "--format=value(projectId)")
+PROJECT_ID_FORMAT = "--format=value(projectId)"
+PROJECTS_LIST_CMD = (GCLOUD, "projects", "list", PROJECT_ID_FORMAT)
 CONFIG_PROJECT_CMD = (GCLOUD, "config", "get-value", "project")
 PSC_REJECTED_STATUSES = ("REJECTED", "CLOSED")
 SERVICE_ATTACHMENT_SUBSTR = "serviceAttachments"
@@ -125,6 +126,15 @@ def run_gcloud_json(cmd: list[str]) -> tuple[list[dict] | dict | str | None, str
         return None, f"{' '.join(cmd)} returned unparsable JSON: {e}"
 
 
+def _normalise_project_id(project: str) -> str:
+    """Resolves a numeric project number (e.g. from spec.harness.projectId) to its projectId."""
+    if not project.isdigit():
+        return project
+    rc, stdout, _ = run_cmd([*PROJECT_DESCRIBE_CMD, project, PROJECT_ID_FORMAT])
+    resolved = stdout.strip() if rc == 0 else ""
+    return resolved or project
+
+
 def get_target_projects(cli_project: str | None = None, listing_errors: list[str] | None = None) -> list[str]:
     """Resolves all target GCP projects to audit.
 
@@ -143,7 +153,7 @@ def get_target_projects(cli_project: str | None = None, listing_errors: list[str
     the discovered scope, alongside any `GCP_PROJECT_ID`-style variable.
     """
     if cli_project and cli_project.strip():
-        project = cli_project.strip()
+        project = _normalise_project_id(cli_project.strip())
         if listing_errors is not None:
             listing_errors.append(SCOPED_RUN_NOTE.format(projects=project, source="`--project-id`"))
         return [project]
@@ -153,7 +163,7 @@ def get_target_projects(cli_project: str | None = None, listing_errors: list[str
     # unset rather than as an override that names nothing and skips discovery.
     monitored = set(os.environ.get(MONITORED_PROJECTS_ENV, "").replace(",", " ").split())
     if monitored:
-        projects = monitored | env_projects
+        projects = {_normalise_project_id(p) for p in monitored | env_projects}
         if listing_errors is not None:
             listing_errors.append(
                 SCOPED_RUN_NOTE.format(projects=", ".join(sorted(projects)), source=f"`{MONITORED_PROJECTS_ENV}`")
@@ -164,6 +174,7 @@ def get_target_projects(cli_project: str | None = None, listing_errors: list[str
     rc, stdout, _ = run_cmd(list(CONFIG_PROJECT_CMD))
     if rc == 0 and stdout.strip():
         projects.add(stdout.strip())
+    projects = {_normalise_project_id(p) for p in projects}
 
     rc, stdout, stderr = run_cmd(list(PROJECTS_LIST_CMD))
     if rc != 0 and listing_errors is not None:

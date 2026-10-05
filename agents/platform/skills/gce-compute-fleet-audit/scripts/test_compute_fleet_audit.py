@@ -195,6 +195,28 @@ class ProjectResolutionTest(unittest.TestCase):
                 doc = json.load(f)
         self.assertIn("project/UNENUMERATED_PROJECTS", [t["cluster"] for t in doc["scope"]["skipped"]])
 
+    def test_numeric_project_id_is_normalised_before_comparing_with_listing(self):
+        env = {
+            compute_fleet_audit.MONITORED_PROJECTS_ENV: "",
+            "GCP_PROJECT_ID": "123456789012",
+            "GKE_PROJECT_ID": "",
+            "PROJECT_ID": "",
+        }
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["gcloud", "projects", "describe"]:
+                return (0, "p-host\n", "")
+            if "projects" in cmd and "list" in cmd:
+                return (0, "p-host\np-extra\n", "")
+            return (0, "", "")
+
+        errors: list[str] = []
+        with patch.dict(os.environ, env, clear=False), patch.object(
+            compute_fleet_audit, "run_cmd", side_effect=fake_run
+        ):
+            self.assertEqual(compute_fleet_audit.get_target_projects(None, errors), ["p-extra", "p-host"])
+        self.assertEqual(errors, [])
+
 
 class AuditComputeTest(unittest.TestCase):
     @patch("compute_fleet_audit.run_gcloud_json")

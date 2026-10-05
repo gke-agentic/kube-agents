@@ -407,6 +407,19 @@ class ProjectResolutionTest(unittest.TestCase):
             self.assertEqual(report.get_target_projects(None, errors), ["p-extra", "p-host"])
         self.assertEqual(errors, [])
 
+    def test_numeric_project_id_is_normalised_before_comparing_with_listing(self):
+        env = {report.MONITORED_PROJECTS_ENV: "", "GCP_PROJECT_ID": "123456789012", "GKE_PROJECT_ID": "", "PROJECT_ID": ""}
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["gcloud", "projects", "describe"]:
+                return (0, "p-host\n", "")
+            if "projects" in cmd and "list" in cmd:
+                return (0, "p-host\np-extra\n", "")
+            return (0, "", "")
+        errors: list[str] = []
+        with patch.dict(os.environ, env, clear=False), patch.object(report, "run_cmd", side_effect=fake_run):
+            self.assertEqual(report.get_target_projects(None, errors), ["p-extra", "p-host"])
+        self.assertEqual(errors, [])
+
 
 class OutputShapeTest(unittest.TestCase):
     def setUp(self):

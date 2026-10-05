@@ -48,7 +48,9 @@ def test_mutating_gcloud_compute_commands_are_flagged():
         "gcloud compute service-attachments update sa-1 --region=us-central1 --consumer-accept-list=p=10",
         "gcloud compute instances add-labels vm-1 --labels=env=prod",
         "gcloud alpha compute instances set-machine-type vm-1 --machine-type=e2-medium",
+        "gcloud preview compute instances delete vm-1",
         "gcloud compute ssh vm-1 --zone=us-central1-a",
+        "gcloud compute ssh get-started-vm --zone=us-central1-a",
         "gcloud compute instances delete vm-1 && gcloud compute instances list",
         'gcloud compute forwarding-rules delete "$(gcloud compute forwarding-rules list --project=p --filter=\'name~bench\' --format=\'value(name)\')" --region=us-central1 --project=p --quiet',
         "gcloud compute instances delete vm --zone=$(gcloud compute instances describe vm --format='value(zone.basename())')",
@@ -57,6 +59,15 @@ def test_mutating_gcloud_compute_commands_are_flagged():
         "gcloud compute firewall-rules create fw --description='describe ingress'",
         "gcloud compute instances delete vm --quiet # list",
         "gcloud compute instances delete vm gcloud compute networks list",
+        "gcloud compute instances delete get-started-vm --zone=us-central1-a",
+        "gcloud compute forwarding-rules delete bench-psc-rejected-endpoint --region=us-central1 --project list-demo --quiet",
+        "gcloud compute forwarding-rules delete list-fr --region=us-central1 --quiet",
+        "gcloud compute instances delete vm --zone us-central1-a describe",
+        "gcloud compute instances delete vm --description list",
+        "gcloud compute instances delete vm --labels env=prod --tags describe",
+        "gcloud compute networks subnets delete get-started-subnet --region=us-central1",
+        "gcloud compute instances --quiet delete list",
+        'gcloud --project="$(gcloud compute instances delete vm-1)" compute instances list',
     ):
         assert _flagged(command), command
 
@@ -83,5 +94,12 @@ def test_read_only_commands_are_not_flagged():
         "gcloud compute networks list; echo done",
         "gcloud compute forwarding-rules list --project=$(gcloud config get-value project)",
         "gcloud compute networks list --project=p1 gcloud compute routers list --project=p2",
+        'gcloud compute --project="$P" forwarding-rules list',
+        'gcloud compute --project "$P" forwarding-rules list',
+        "gcloud compute --project=$(gcloud config get-value project) networks list",
+        "gcloud compute --project=$(gcloud projects list --format='value(projectId)' | head -n1) networks list",
+        "gcloud compute --quiet forwarding-rules list",
+        "gcloud compute networks subnets --project=p list",
+        "gcloud compute networks vpc-access connectors list --region=us-central1 --project=p",
     ):
         assert not _flagged(command), command

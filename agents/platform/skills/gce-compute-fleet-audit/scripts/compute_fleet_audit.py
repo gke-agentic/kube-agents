@@ -15,10 +15,9 @@ import sys
 MONITORED_PROJECTS_ENV = "MONITORED_PROJECT_IDS"
 PROJECT_ENV_VARS = ("GCP_PROJECT_ID", "GKE_PROJECT_ID", "PROJECT_ID")
 GCLOUD = "gcloud"
-PROJECTS_LIST_CMD = (GCLOUD, "projects", "list", "--format=value(projectId)")
+PROJECT_ID_FORMAT = "--format=value(projectId)"
+PROJECTS_LIST_CMD = (GCLOUD, "projects", "list", PROJECT_ID_FORMAT)
 CONFIG_PROJECT_CMD = (GCLOUD, "config", "get-value", "project")
-DEFAULT_TIMEOUT_SECONDS = 60
-ORPHANED_SNAPSHOT_AGE_DAYS = 90
 PROJECT_TARGET_PREFIX = "project/"
 GLOBAL_LOCATION = "global"
 UNKNOWN_PROJECT = "unknown"
@@ -51,10 +50,9 @@ REFUSED_PROJECT_NUMBER_RE = re.compile(r"\bprojects?[ /](\d+)\b")
 PROJECT_DESCRIBE_CMD = (GCLOUD, "projects", "describe")
 PROJECT_NUMBER_FORMAT = "--format=value(projectNumber)"
 PROJECT_FLAG = "--project"
-JSON_INDENT = 2
 
 
-def run_cmd(cmd: list[str], timeout: int = DEFAULT_TIMEOUT_SECONDS) -> tuple[int, str, str]:
+def run_cmd(cmd: list[str], timeout: int = 60) -> tuple[int, str, str]:
     """Runs a shell command with a timeout and returns (rc, stdout, stderr)."""
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
@@ -125,6 +123,15 @@ def run_gcloud_json(cmd: list[str]) -> tuple[list[dict] | dict | str | None, str
         return None, f"{' '.join(cmd)} returned unparsable JSON: {e}"
 
 
+def _normalise_project_id(project: str) -> str:
+    """Resolves a numeric project number (e.g. from spec.harness.projectId) to its projectId."""
+    if not project.isdigit():
+        return project
+    rc, stdout, _ = run_cmd([*PROJECT_DESCRIBE_CMD, project, PROJECT_ID_FORMAT])
+    resolved = stdout.strip() if rc == 0 else ""
+    return resolved or project
+
+
 def get_target_projects(cli_project: str | None = None, listing_errors: list[str] | None = None) -> list[str]:
     """Resolves all target GCP projects to audit.
 
@@ -143,7 +150,7 @@ def get_target_projects(cli_project: str | None = None, listing_errors: list[str
     the discovered scope, alongside any `GCP_PROJECT_ID`-style variable.
     """
     if cli_project and cli_project.strip():
-        project = cli_project.strip()
+        project = _normalise_project_id(cli_project.strip())
         if listing_errors is not None:
             listing_errors.append(SCOPED_RUN_NOTE.format(projects=project, source="`--project-id`"))
         return [project]
@@ -153,7 +160,7 @@ def get_target_projects(cli_project: str | None = None, listing_errors: list[str
     # unset rather than as an override that names nothing and skips discovery.
     monitored = set(os.environ.get(MONITORED_PROJECTS_ENV, "").replace(",", " ").split())
     if monitored:
-        projects = monitored | env_projects
+        projects = {_normalise_project_id(p) for p in monitored | env_projects}
         if listing_errors is not None:
             listing_errors.append(
                 SCOPED_RUN_NOTE.format(projects=", ".join(sorted(projects)), source=f"`{MONITORED_PROJECTS_ENV}`")
@@ -164,6 +171,7 @@ def get_target_projects(cli_project: str | None = None, listing_errors: list[str
     rc, stdout, _ = run_cmd(list(CONFIG_PROJECT_CMD))
     if rc == 0 and stdout.strip():
         projects.add(stdout.strip())
+    projects = {_normalise_project_id(p) for p in projects}
 
     rc, stdout, stderr = run_cmd(list(PROJECTS_LIST_CMD))
     if rc != 0 and listing_errors is not None:
@@ -284,7 +292,7 @@ def audit_project_compute(project_id: str, skipped_targets: list, active_targets
                     if creation_timestamp_str:
                         try:
                             ts = datetime.datetime.fromisoformat(creation_timestamp_str.replace("Z", "+00:00"))
-                            if (now - ts).days > ORPHANED_SNAPSHOT_AGE_DAYS:
+                            if (now - ts).days > 90:
                                 is_old = True
                         except Exception:
                             pass
@@ -375,7 +383,7 @@ def main():
         try:
             os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
             with open(args.output, "w", encoding="utf-8") as f:
-                json.dump(findings_document, f, indent=JSON_INDENT)
+                json.dump(findings_document, f, indent=2)
         except Exception as e:
             sys.stderr.write(f"Failed to write output to {args.output}: {e}\n")
             sys.exit(1)

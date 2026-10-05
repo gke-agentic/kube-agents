@@ -48,9 +48,9 @@ MONITORED_PROJECTS_ENV = "MONITORED_PROJECT_IDS"
 PROJECT_ENV_VARS = ("GCP_PROJECT_ID", "GKE_PROJECT_ID", "PROJECT_ID")
 GCLOUD = "gcloud"
 JSON_FORMAT_FLAG = "--format=json"
-PROJECTS_LIST_CMD = (GCLOUD, "projects", "list", "--format=value(projectId)")
-# The `project` a failed or filtered `gcloud projects list` is reported under: it is
-# no one project, so `compute_progress` leaves it out of the projects that failed.
+PROJECT_ID_FORMAT = "--format=value(projectId)"
+PROJECTS_LIST_CMD = (GCLOUD, "projects", "list", PROJECT_ID_FORMAT)
+# The `project` a failed or filtered `gcloud projects list` is reported under.
 PROJECTS_LIST_ERROR_SCOPE = "(all projects: gcloud projects list)"
 PROJECTS_LIST_ERROR_CHARS = 300
 CONFIG_PROJECT_CMD = (GCLOUD, "config", "get-value", "project")
@@ -296,6 +296,15 @@ def refusal_names_project(project: str, stderr: str) -> tuple[bool, str]:
     return False, f"the Kubernetes Engine API is off in a project other than {project!r}, such as a quota project"
 
 
+def _normalise_project_id(project: str) -> str:
+    """Resolves a numeric project number (e.g. from spec.harness.projectId) to its projectId."""
+    if not project.isdigit():
+        return project
+    rc, stdout, _ = run_cmd([*PROJECT_DESCRIBE_CMD, project, PROJECT_ID_FORMAT])
+    resolved = stdout.strip() if rc == 0 else ""
+    return resolved or project
+
+
 def get_target_projects(cli_projects: list[str] | None = None, listing_errors: list[str] | None = None) -> list[str]:
     """Resolves the projects to enumerate; --project wins, else env unioned with discovery.
 
@@ -305,7 +314,7 @@ def get_target_projects(cli_projects: list[str] | None = None, listing_errors: l
     configured project: it is filtered, not complete, as fleet_drift.py treats it.
     """
     if cli_projects:
-        return sorted(set(p.strip() for p in cli_projects if p.strip()))
+        return sorted({_normalise_project_id(p.strip()) for p in cli_projects if p.strip()})
 
     # Parsed before it is tested, so a blank or separator-only value reads as
     # unset rather than as an override that names nothing and skips discovery.
@@ -315,27 +324,29 @@ def get_target_projects(cli_projects: list[str] | None = None, listing_errors: l
         val = os.environ.get(env_var, "").strip()
         if val:
             projects.add(val)
-    if not monitored:
-        # The host project is always in a discovered scope, whether or not a
-        # `GCP_PROJECT_ID`-style variable also names one.
-        rc, stdout, _ = run_cmd(list(CONFIG_PROJECT_CMD))
-        if rc == 0 and stdout.strip():
-            projects.add(stdout.strip())
-        rc, stdout, stderr = run_cmd(list(PROJECTS_LIST_CMD))
-        if rc != 0 and listing_errors is not None:
+    if monitored:
+        return sorted({_normalise_project_id(p) for p in projects})
+    # The host project is always in a discovered scope, whether or not a
+    # `GCP_PROJECT_ID`-style variable also names one.
+    rc, stdout, _ = run_cmd(list(CONFIG_PROJECT_CMD))
+    if rc == 0 and stdout.strip():
+        projects.add(stdout.strip())
+    projects = {_normalise_project_id(p) for p in projects}
+    rc, stdout, stderr = run_cmd(list(PROJECTS_LIST_CMD))
+    if rc != 0 and listing_errors is not None:
+        listing_errors.append(
+            f"rc={rc}: {(stderr or '').strip()[:PROJECTS_LIST_ERROR_CHARS] or 'no stderr'}; "
+            "the scope fell back to the configured project and other projects were not read"
+        )
+    if rc == 0:
+        listed = {line.strip() for line in stdout.splitlines() if line.strip()}
+        omitted = sorted(projects - listed)
+        if omitted and listing_errors is not None:
             listing_errors.append(
-                f"rc={rc}: {(stderr or '').strip()[:PROJECTS_LIST_ERROR_CHARS] or 'no stderr'}; "
-                "the scope fell back to the configured project and other projects were not read"
+                f"rc=0 but did not name {', '.join(omitted)}; the listing is filtered, "
+                "so other projects may not have been read"
             )
-        if rc == 0:
-            listed = {line.strip() for line in stdout.splitlines() if line.strip()}
-            omitted = sorted(projects - listed)
-            if omitted and listing_errors is not None:
-                listing_errors.append(
-                    f"rc=0 but did not name {', '.join(omitted)}; the listing is filtered, "
-                    "so other projects may not have been read"
-                )
-            projects |= listed
+        projects |= listed
     return sorted(projects)
 
 
@@ -896,11 +907,7 @@ def compute_progress(report: dict, previous: dict | None, now: datetime, rollout
     """
     now_text = format_timestamp(now)
     prior_members = previous["members"] if previous else {}
-    failed_projects = {
-        e["project"]
-        for e in report["errors"]
-        if e.get("location") is None and e["project"] != PROJECTS_LIST_ERROR_SCOPE
-    }
+    failed_projects = {e["project"] for e in report["errors"] if e.get("location") is None}
     read_projects = set(report["projects"]) - failed_projects
 
     record: dict[str, dict] = {}
