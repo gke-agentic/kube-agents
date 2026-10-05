@@ -185,7 +185,7 @@ class ProjectResolutionTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             out = os.path.join(tmpdir, "findings.json")
-            with patch.object(compute_fleet_audit, "run_gcloud_json", return_value=[]), \
+            with patch.object(compute_fleet_audit, "run_gcloud_json", return_value=([], None)), \
                     patch.object(compute_fleet_audit, "run_cmd", return_value=(0, "", "")), \
                     patch.object(sys, "argv", ["compute_fleet_audit.py", "--project-id", "cli-proj", "--output", out]), \
                     patch("sys.stdout", new_callable=io.StringIO), \
@@ -201,9 +201,9 @@ class AuditComputeTest(unittest.TestCase):
     @patch("compute_fleet_audit.run_cmd")
     def test_startup_script_failure_detected(self, mock_run_cmd, mock_gcloud_json):
         mock_gcloud_json.side_effect = [
-            [{"name": "vm-fail", "zone": "zones/us-central1-a", "status": "RUNNING"}],
-            [],  # disks
-            [],  # snapshots
+            ([{"name": "vm-fail", "zone": "zones/us-central1-a", "status": "RUNNING"}], None),
+            ([], None),  # disks
+            ([], None),  # snapshots
         ]
         mock_run_cmd.return_value = (0, "Oct 12 10:00:00 Finished running startup scripts with error\n", "")
 
@@ -222,7 +222,7 @@ class AuditComputeTest(unittest.TestCase):
 
     @patch("compute_fleet_audit.run_gcloud_json")
     def test_failed_instance_list_skips_project(self, mock_gcloud_json):
-        mock_gcloud_json.return_value = None
+        mock_gcloud_json.return_value = (None, "gcloud compute instances list --project test-proj --format=json failed (1): PERMISSION_DENIED")
 
         skipped = []
         active = []
@@ -232,7 +232,7 @@ class AuditComputeTest(unittest.TestCase):
         self.assertEqual(len(active), 0)
         self.assertEqual(len(skipped), 1)
         self.assertEqual(skipped[0]["cluster"], "project/test-proj")
-        self.assertIn("Failed to list compute instances", skipped[0]["reason"])
+        self.assertIn("PERMISSION_DENIED", skipped[0]["reason"])
 
     @patch("compute_fleet_audit.run_cmd")
     def test_api_disabled_project_is_ignored_without_skip(self, mock_run_cmd):
@@ -263,10 +263,30 @@ class AuditComputeTest(unittest.TestCase):
     def test_quota_project_refusal_is_a_failed_read(self):
         """A refusal naming another project's number says nothing about this one."""
         skipped, active = [], []
-        with patch("compute_fleet_audit.run_cmd", side_effect=self._refusal_run("222222222222")):
+        with patch("compute_fleet_audit.run_cmd", side_effect=self._refusal_run("222222222222")), \
+                patch("sys.stderr", new_callable=io.StringIO):
             compute_fleet_audit.audit_project_compute("real-proj", skipped, active)
         self.assertEqual(active, [])
         self.assertEqual([t["cluster"] for t in skipped], ["project/real-proj"])
+        self.assertIn(
+            "the API is off in a project other than 'real-proj', such as a quota project",
+            skipped[0]["reason"],
+        )
+
+        def describe_failed(cmd, *args, **kwargs):
+            if cmd[:3] == ["gcloud", "projects", "describe"]:
+                return (1, "", "PERMISSION_DENIED: resourcemanager.projects.get")
+            return self._refusal_run("222222222222")(cmd, *args, **kwargs)
+
+        skipped, active = [], []
+        with patch("compute_fleet_audit.run_cmd", side_effect=describe_failed), \
+                patch("sys.stderr", new_callable=io.StringIO):
+            compute_fleet_audit.audit_project_compute("real-proj", skipped, active)
+        self.assertEqual(active, [])
+        self.assertIn(
+            "`gcloud projects describe real-proj` failed (rc=1), so the refusal's project number could not be compared",
+            skipped[0]["reason"],
+        )
 
     def test_own_numbered_refusal_is_empty(self):
         skipped, active = [], []

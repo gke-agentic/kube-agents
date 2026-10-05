@@ -100,11 +100,11 @@ def refusal_names_project(project: str, stderr: str) -> tuple[bool, str]:
     return False, f"the API is off in a project other than {project!r}, such as a quota project"
 
 
-def run_gcloud_json(cmd: list[str]) -> list[dict] | dict | str | None:
+def run_gcloud_json(cmd: list[str]) -> tuple[list[dict] | dict | str | None, str | None]:
     """Runs a gcloud command and parses JSON output safely.
 
-    Returns API_DISABLED only for a refusal naming the `--project` the command
-    reads; any other failure is None, a failed read.
+    Returns (API_DISABLED, None) only for a refusal naming the `--project` the
+    command reads; any other failure returns (None, error_message).
     """
     rc, stdout, stderr = run_cmd(cmd)
     if rc != 0:
@@ -112,17 +112,17 @@ def run_gcloud_json(cmd: list[str]) -> list[dict] | dict | str | None:
         if project and any(marker in (stderr or "") for marker in API_DISABLED_MARKERS):
             ours, why_not = refusal_names_project(project, stderr)
             if ours:
-                return API_DISABLED
+                return API_DISABLED, None
             stderr = f"{stderr.strip()} ({why_not})"
         sys.stderr.write(f"gcloud command failed ({rc}): {' '.join(cmd)}\n{stderr}\n")
-        return None
+        return None, f"{' '.join(cmd)} failed ({rc}): {stderr.strip()}"
     if not stdout.strip():
-        return []
+        return [], None
     try:
-        return json.loads(stdout)
+        return json.loads(stdout), None
     except Exception as e:
         sys.stderr.write(f"Error parsing gcloud output from {' '.join(cmd)}: {e}\n")
-        return None
+        return None, f"{' '.join(cmd)} returned unparsable JSON: {e}"
 
 
 def get_target_projects(cli_project: str | None = None, listing_errors: list[str] | None = None) -> list[str]:
@@ -191,16 +191,16 @@ def audit_project_compute(project_id: str, skipped_targets: list, active_targets
     target_name = f"{PROJECT_TARGET_PREFIX}{project_id}"
 
     # 1. Inspect running compute instances for startup script errors in serial port output
-    instances = run_gcloud_json(["gcloud", "compute", "instances", "list", "--project", project_id, "--format=json"])
+    instances, error = run_gcloud_json(["gcloud", "compute", "instances", "list", "--project", project_id, "--format=json"])
     if instances == API_DISABLED:
         return findings
-    if instances is None or not isinstance(instances, list):
+    if error is not None or not isinstance(instances, list):
         skipped_targets.append({
             "cluster": target_name,
             "name": target_name,
-            "location": "global",
+            "location": GLOBAL_LOCATION,
             "project": project_id,
-            "reason": f"Failed to list compute instances in project {project_id} (permission denied or API unavailable)"
+            "reason": error or f"Failed to list compute instances in project {project_id}"
         })
         return findings
 
@@ -253,7 +253,7 @@ def audit_project_compute(project_id: str, skipped_targets: list, active_targets
                     })
 
     # 2. Inspect disks and snapshots for orphaned snapshots of deleted source disks
-    disks = run_gcloud_json(["gcloud", "compute", "disks", "list", "--project", project_id, "--format=json"])
+    disks, _ = run_gcloud_json(["gcloud", "compute", "disks", "list", "--project", project_id, "--format=json"])
     if disks is not None and isinstance(disks, list):
         active_disk_names = set()
         for d in disks:
@@ -264,7 +264,7 @@ def audit_project_compute(project_id: str, skipped_targets: list, active_targets
             if self_link:
                 active_disk_names.add(self_link)
 
-        snapshots = run_gcloud_json(["gcloud", "compute", "snapshots", "list", "--project", project_id, "--format=json"])
+        snapshots, _ = run_gcloud_json(["gcloud", "compute", "snapshots", "list", "--project", project_id, "--format=json"])
         if isinstance(snapshots, list):
             checks_run.append({
                 "check": "orphaned-snapshots",

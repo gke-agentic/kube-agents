@@ -16,7 +16,7 @@ import networking_audit
 class TestNetworkingAudit(unittest.TestCase):
     @patch("networking_audit.run_gcloud_json")
     def test_audit_project_networking_rejected_psc(self, mock_gcloud):
-        mock_gcloud.return_value = [
+        mock_gcloud.return_value = ([
             {
                 "name": "psc-ep-1",
                 "region": "projects/p/regions/us-central1",
@@ -29,7 +29,7 @@ class TestNetworkingAudit(unittest.TestCase):
                 "target": "projects/p/regions/us-central1/serviceAttachments/sa-2",
                 "pscConnectionStatus": "ACCEPTED"
             }
-        ]
+        ], None)
 
         skipped = []
         active = []
@@ -38,6 +38,7 @@ class TestNetworkingAudit(unittest.TestCase):
         self.assertEqual(findings[0]["check"], "psc-routing-deadlock")
         self.assertEqual(findings[0]["cluster"], "project/test-proj")
         self.assertEqual(findings[0]["object"], "ForwardingRule/psc-ep-1")
+        self.assertEqual(findings[0]["remediation"], {"kind": "gcloud", "path": ""})
         self.assertEqual(len(skipped), 0)
         self.assertEqual(len(active), 1)
         self.assertEqual(active[0]["name"], "project/test-proj")
@@ -46,7 +47,7 @@ class TestNetworkingAudit(unittest.TestCase):
 
     @patch("networking_audit.run_gcloud_json")
     def test_audit_project_networking_empty(self, mock_gcloud):
-        mock_gcloud.return_value = []
+        mock_gcloud.return_value = ([], None)
         skipped = []
         active = []
         findings = networking_audit.audit_project_networking("test-proj", skipped, active)
@@ -56,7 +57,7 @@ class TestNetworkingAudit(unittest.TestCase):
 
     @patch("networking_audit.run_gcloud_json")
     def test_unreadable_project_is_skipped_not_fatal(self, mock_gcloud):
-        mock_gcloud.return_value = None
+        mock_gcloud.return_value = (None, "gcloud compute forwarding-rules list --project denied-proj --format=json failed (1): PERMISSION_DENIED")
         skipped = []
         active = []
         findings = networking_audit.audit_project_networking("denied-proj", skipped, active)
@@ -65,7 +66,7 @@ class TestNetworkingAudit(unittest.TestCase):
         self.assertEqual(len(skipped), 1)
         self.assertEqual(skipped[0]["cluster"], "project/denied-proj")
         self.assertEqual(skipped[0]["project"], "denied-proj")
-        self.assertIn("Failed to list forwarding rules", skipped[0]["reason"])
+        self.assertIn("PERMISSION_DENIED", skipped[0]["reason"])
 
     @patch("networking_audit.run_cmd")
     def test_api_disabled_project_is_ignored_without_skip(self, mock_run_cmd):
@@ -96,10 +97,30 @@ class TestNetworkingAudit(unittest.TestCase):
     def test_quota_project_refusal_is_a_failed_read(self):
         """A refusal naming another project's number says nothing about this one."""
         skipped, active = [], []
-        with patch("networking_audit.run_cmd", side_effect=self._refusal_run("222222222222")):
+        with patch("networking_audit.run_cmd", side_effect=self._refusal_run("222222222222")), \
+                patch("sys.stderr", new_callable=io.StringIO):
             networking_audit.audit_project_networking("real-proj", skipped, active)
         self.assertEqual(active, [])
         self.assertEqual([t["cluster"] for t in skipped], ["project/real-proj"])
+        self.assertIn(
+            "the API is off in a project other than 'real-proj', such as a quota project",
+            skipped[0]["reason"],
+        )
+
+        def describe_failed(cmd, *args, **kwargs):
+            if cmd[:3] == ["gcloud", "projects", "describe"]:
+                return (1, "", "PERMISSION_DENIED: resourcemanager.projects.get")
+            return self._refusal_run("222222222222")(cmd, *args, **kwargs)
+
+        skipped, active = [], []
+        with patch("networking_audit.run_cmd", side_effect=describe_failed), \
+                patch("sys.stderr", new_callable=io.StringIO):
+            networking_audit.audit_project_networking("real-proj", skipped, active)
+        self.assertEqual(active, [])
+        self.assertIn(
+            "`gcloud projects describe real-proj` failed (rc=1), so the refusal's project number could not be compared",
+            skipped[0]["reason"],
+        )
 
     def test_own_numbered_refusal_is_empty(self):
         skipped, active = [], []
@@ -119,7 +140,7 @@ class MainSweepTest(unittest.TestCase):
         }]
 
         def fake_gcloud_json(cmd):
-            return None if "denied" in cmd else rejected_rule
+            return (None, "failed") if "denied" in cmd else (rejected_rule, None)
 
         argv = ["networking_audit.py", "--output", os.path.join(self.tmpdir, "findings.json")]
         with patch.object(networking_audit, "get_target_projects", return_value=["denied", "readable"]), \
@@ -326,7 +347,7 @@ class ProjectResolutionTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             out = os.path.join(tmpdir, "findings.json")
-            with patch.object(networking_audit, "run_gcloud_json", return_value=[]), \
+            with patch.object(networking_audit, "run_gcloud_json", return_value=([], None)), \
                     patch.object(networking_audit, "run_cmd", return_value=(0, "", "")), \
                     patch.object(sys, "argv", ["networking_audit.py", "--project-id", "cli-proj", "--output", out]), \
                     patch("sys.stdout", new_callable=io.StringIO), \

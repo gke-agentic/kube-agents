@@ -100,11 +100,11 @@ def refusal_names_project(project: str, stderr: str) -> tuple[bool, str]:
     return False, f"the API is off in a project other than {project!r}, such as a quota project"
 
 
-def run_gcloud_json(cmd: list[str]) -> list[dict] | dict | str | None:
+def run_gcloud_json(cmd: list[str]) -> tuple[list[dict] | dict | str | None, str | None]:
     """Runs a gcloud command and parses JSON output safely.
 
-    Returns API_DISABLED only for a refusal naming the `--project` the command
-    reads; any other failure is None, a failed read.
+    Returns (API_DISABLED, None) only for a refusal naming the `--project` the
+    command reads; any other failure returns (None, error_message).
     """
     rc, stdout, stderr = run_cmd(cmd)
     if rc != 0:
@@ -112,17 +112,17 @@ def run_gcloud_json(cmd: list[str]) -> list[dict] | dict | str | None:
         if project and any(marker in (stderr or "") for marker in API_DISABLED_MARKERS):
             ours, why_not = refusal_names_project(project, stderr)
             if ours:
-                return API_DISABLED
+                return API_DISABLED, None
             stderr = f"{stderr.strip()} ({why_not})"
         sys.stderr.write(f"gcloud command failed ({rc}): {' '.join(cmd)}\n{stderr}\n")
-        return None
+        return None, f"{' '.join(cmd)} failed ({rc}): {stderr.strip()}"
     if not stdout.strip():
-        return []
+        return [], None
     try:
-        return json.loads(stdout)
+        return json.loads(stdout), None
     except Exception as e:
         sys.stderr.write(f"Error parsing gcloud output from {' '.join(cmd)}: {e}\n")
-        return None
+        return None, f"{' '.join(cmd)} returned unparsable JSON: {e}"
 
 
 def get_target_projects(cli_project: str | None = None, listing_errors: list[str] | None = None) -> list[str]:
@@ -195,16 +195,16 @@ def audit_project_networking(project_id: str, skipped_targets: list, active_targ
 
     # 1. Inspect PSC forwarding rules for disconnected / rejected attachments
     list_cmd = f"gcloud compute forwarding-rules list --project={project_id} --format=json"
-    fwd_rules = run_gcloud_json(["gcloud", "compute", "forwarding-rules", "list", "--project", project_id, "--format=json"])
+    fwd_rules, error = run_gcloud_json(["gcloud", "compute", "forwarding-rules", "list", "--project", project_id, "--format=json"])
     if fwd_rules == API_DISABLED:
         return findings
-    if fwd_rules is None or not isinstance(fwd_rules, list):
+    if error is not None or not isinstance(fwd_rules, list):
         skipped_targets.append({
             "cluster": target_name,
             "name": target_name,
             "location": GLOBAL_LOCATION,
             "project": project_id,
-            "reason": f"Failed to list forwarding rules in project {project_id} (permission denied or API unavailable)"
+            "reason": error or f"Failed to list forwarding rules in project {project_id}"
         })
         return findings
 
@@ -242,8 +242,7 @@ def audit_project_networking(project_id: str, skipped_targets: list, active_targ
                 },
                 "remediation": {
                     "kind": "gcloud",
-                    "path": "",
-                    "note": f"gcloud compute forwarding-rules describe {name} --region={region} --project={project_id}"
+                    "path": ""
                 }
             })
 
